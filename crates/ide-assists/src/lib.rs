@@ -158,6 +158,7 @@ mod handlers {
     mod generate_new;
     mod generate_setter;
     mod generate_delegate_methods;
+    mod generate_delegate_traits;
     mod add_return_type;
     mod inline_call;
     mod inline_local_variable;
@@ -248,6 +249,7 @@ mod handlers {
             generate_default_from_enum_variant::generate_default_from_enum_variant,
             generate_default_from_new::generate_default_from_new,
             generate_derive::generate_derive,
+            generate_delegate_traits::generate_delegate_trait,
             generate_documentation_template::generate_documentation_template,
             generate_documentation_template::generate_doc_example,
             generate_enum_is_method::generate_enum_is_method,
