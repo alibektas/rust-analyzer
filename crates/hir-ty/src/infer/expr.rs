@@ -10,10 +10,10 @@ use chalk_ir::{
     cast::Cast, fold::Shift, DebruijnIndex, GenericArgData, Mutability, TyKind, TyVariableKind,
 };
 use hir_def::{
-    expr::{
+    generics::TypeOrConstParamData,
+    hir::{
         ArithOp, Array, BinaryOp, ClosureKind, Expr, ExprId, LabelId, Literal, Statement, UnaryOp,
     },
-    generics::TypeOrConstParamData,
     lang_item::LangItem,
     path::{GenericArg, GenericArgs},
     BlockId, ConstParamId, FieldId, ItemContainerId, Lookup,
@@ -86,10 +86,10 @@ impl<'a> InferenceContext<'a> {
         }
     }
 
-    pub(super) fn infer_expr_coerce_never(&mut self, expr: ExprId, expected: &Expectation) -> Ty {
+    fn infer_expr_coerce_never(&mut self, expr: ExprId, expected: &Expectation) -> Ty {
         let ty = self.infer_expr_inner(expr, expected);
         // While we don't allow *arbitrary* coercions here, we *do* allow
-        // coercions from ! to `expected`.
+        // coercions from `!` to `expected`.
         if ty.is_never() {
             if let Some(adjustments) = self.result.expr_adjustments.get(&expr) {
                 return if let [Adjustment { kind: Adjust::NeverToAny, target }] = &**adjustments {
@@ -99,13 +99,22 @@ impl<'a> InferenceContext<'a> {
                 };
             }
 
-            let adj_ty = self.table.new_type_var();
-            self.write_expr_adj(
-                expr,
-                vec![Adjustment { kind: Adjust::NeverToAny, target: adj_ty.clone() }],
-            );
-            adj_ty
+            if let Some(target) = expected.only_has_type(&mut self.table) {
+                self.coerce(Some(expr), &ty, &target)
+                    .expect("never-to-any coercion should always succeed")
+            } else {
+                ty
+            }
         } else {
+            if let Some(expected_ty) = expected.only_has_type(&mut self.table) {
+                let could_unify = self.unify(&ty, &expected_ty);
+                if !could_unify {
+                    self.result.type_mismatches.insert(
+                        expr.into(),
+                        TypeMismatch { expected: expected_ty, actual: ty.clone() },
+                    );
+                }
+            }
             ty
         }
     }
@@ -293,7 +302,6 @@ impl<'a> InferenceContext<'a> {
 
                 // FIXME: lift these out into a struct
                 let prev_diverges = mem::replace(&mut self.diverges, Diverges::Maybe);
-                let prev_is_async_fn = mem::replace(&mut self.is_async_fn, false);
                 let prev_ret_ty = mem::replace(&mut self.return_ty, ret_ty.clone());
                 let prev_ret_coercion =
                     mem::replace(&mut self.return_coercion, Some(CoerceMany::new(ret_ty)));
@@ -307,7 +315,6 @@ impl<'a> InferenceContext<'a> {
                 self.diverges = prev_diverges;
                 self.return_ty = prev_ret_ty;
                 self.return_coercion = prev_ret_coercion;
-                self.is_async_fn = prev_is_async_fn;
                 self.resume_yield_tys = prev_resume_yield_tys;
 
                 ty
@@ -461,8 +468,8 @@ impl<'a> InferenceContext<'a> {
                 self.resolver.reset_to_guard(g);
                 ty
             }
-            Expr::Continue { label } => {
-                if let None = find_continuable(&mut self.breakables, label.as_ref()) {
+            &Expr::Continue { label } => {
+                if let None = find_continuable(&mut self.breakables, label) {
                     self.push_diagnostic(InferenceDiagnostic::BreakOutsideOfLoop {
                         expr: tgt_expr,
                         is_break: false,
@@ -471,9 +478,9 @@ impl<'a> InferenceContext<'a> {
                 };
                 self.result.standard_types.never.clone()
             }
-            Expr::Break { expr, label } => {
-                let val_ty = if let Some(expr) = *expr {
-                    let opt_coerce_to = match find_breakable(&mut self.breakables, label.as_ref()) {
+            &Expr::Break { expr, label } => {
+                let val_ty = if let Some(expr) = expr {
+                    let opt_coerce_to = match find_breakable(&mut self.breakables, label) {
                         Some(ctxt) => match &ctxt.coerce {
                             Some(coerce) => coerce.expected_ty(),
                             None => {
@@ -492,13 +499,13 @@ impl<'a> InferenceContext<'a> {
                     TyBuilder::unit()
                 };
 
-                match find_breakable(&mut self.breakables, label.as_ref()) {
+                match find_breakable(&mut self.breakables, label) {
                     Some(ctxt) => match ctxt.coerce.take() {
                         Some(mut coerce) => {
-                            coerce.coerce(self, *expr, &val_ty);
+                            coerce.coerce(self, expr, &val_ty);
 
                             // Avoiding borrowck
-                            let ctxt = find_breakable(&mut self.breakables, label.as_ref())
+                            let ctxt = find_breakable(&mut self.breakables, label)
                                 .expect("breakable stack changed during coercion");
                             ctxt.may_break = true;
                             ctxt.coerce = Some(coerce);
@@ -963,11 +970,7 @@ impl<'a> InferenceContext<'a> {
             .as_mut()
             .expect("infer_return called outside function body")
             .expected_ty();
-        let return_expr_ty = if self.is_async_fn {
-            self.infer_async_block(expr, &None, &[], &Some(expr))
-        } else {
-            self.infer_expr_inner(expr, &Expectation::HasType(ret_ty))
-        };
+        let return_expr_ty = self.infer_expr_inner(expr, &Expectation::HasType(ret_ty));
         let mut coerce_many = self.return_coercion.take().unwrap();
         coerce_many.coerce(self, Some(expr), &return_expr_ty);
         self.return_coercion = Some(coerce_many);
@@ -1906,7 +1909,6 @@ impl<'a> InferenceContext<'a> {
         cb: impl FnOnce(&mut Self) -> T,
     ) -> (Option<Ty>, T) {
         self.breakables.push({
-            let label = label.map(|label| self.body[label].name.clone());
             BreakableContext { kind, may_break: false, coerce: ty.map(CoerceMany::new), label }
         });
         let res = cb(self);

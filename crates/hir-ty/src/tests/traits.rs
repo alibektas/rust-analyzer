@@ -3812,6 +3812,35 @@ fn f() {
 }
 
 #[test]
+fn regression_14443_trait_solve() {
+    check_no_mismatches(
+        r#"
+trait T {
+    fn f(&self) {}
+}
+
+
+fn main() {
+    struct A;
+    impl T for A {}
+
+    let a = A;
+
+    let b = {
+        struct B;
+        impl T for B {}
+
+        B
+    };
+
+    a.f();
+    b.f();
+}
+"#,
+    )
+}
+
+#[test]
 fn associated_type_sized_bounds() {
     check_infer(
         r#"
@@ -4181,5 +4210,168 @@ fn test() {
       //^ f64
 }
 "#,
+    );
+}
+
+#[test]
+fn associated_type_in_struct_expr_path() {
+    // FIXME: All annotation should be resolvable.
+    // For lines marked as unstable, see rust-lang/rust#86935.
+    // FIXME: Remove the comments once stablized.
+    check_types(
+        r#"
+trait Trait {
+    type Assoc;
+    fn f();
+}
+
+struct S { x: u32 }
+
+impl Trait for () {
+    type Assoc = S;
+
+    fn f() {
+        let x = 42;
+        let a = Self::Assoc { x };
+      //    ^ S
+        let a = <Self>::Assoc { x }; // unstable
+      //    ^ {unknown}
+
+        // should be `Copy` but we don't track ownership anyway.
+        let value = S { x };
+        if let Self::Assoc { x } = value {}
+      //                     ^ u32
+        if let <Self>::Assoc { x } = value {} // unstable
+      //                       ^ {unknown}
+    }
+}
+    "#,
+    );
+}
+
+#[test]
+fn associted_type_in_struct_expr_path_enum() {
+    // FIXME: All annotation should be resolvable.
+    // For lines marked as unstable, see rust-lang/rust#86935.
+    // FIXME: Remove the comments once stablized.
+    check_types(
+        r#"
+trait Trait {
+    type Assoc;
+    fn f();
+}
+
+enum E {
+    Unit,
+    Struct { x: u32 },
+}
+
+impl Trait for () {
+    type Assoc = E;
+
+    fn f() {
+        let a = Self::Assoc::Unit;
+      //    ^ E
+        let a = <Self>::Assoc::Unit;
+      //    ^ E
+        let a = <Self::Assoc>::Unit;
+      //    ^ E
+        let a = <<Self>::Assoc>::Unit;
+      //    ^ E
+
+        // should be `Copy` but we don't track ownership anyway.
+        let value = E::Unit;
+        if let Self::Assoc::Unit = value {}
+      //       ^^^^^^^^^^^^^^^^^ E
+        if let <Self>::Assoc::Unit = value {}
+      //       ^^^^^^^^^^^^^^^^^^^ E
+        if let <Self::Assoc>::Unit = value {}
+      //       ^^^^^^^^^^^^^^^^^^^ E
+        if let <<Self>::Assoc>::Unit = value {}
+      //       ^^^^^^^^^^^^^^^^^^^^^ E
+
+        let x = 42;
+        let a = Self::Assoc::Struct { x };
+      //    ^ E
+        let a = <Self>::Assoc::Struct { x }; // unstable
+      //    ^ {unknown}
+        let a = <Self::Assoc>::Struct { x }; // unstable
+      //    ^ {unknown}
+        let a = <<Self>::Assoc>::Struct { x }; // unstable
+      //    ^ {unknown}
+
+        // should be `Copy` but we don't track ownership anyway.
+        let value = E::Struct { x: 42 };
+        if let Self::Assoc::Struct { x } = value {}
+      //                             ^ u32
+        if let <Self>::Assoc::Struct { x } = value {} // unstable
+      //                               ^ {unknown}
+        if let <Self::Assoc>::Struct { x } = value {} // unstable
+      //                               ^ {unknown}
+        if let <<Self>::Assoc>::Struct { x } = value {} // unstable
+      //                                 ^ {unknown}
+    }
+}
+    "#,
+    );
+}
+
+#[test]
+fn derive_macro_bounds() {
+    check_types(
+        r#"
+        //- minicore: clone, derive
+        #[derive(Clone)]
+        struct Copy;
+        struct NotCopy;
+        #[derive(Clone)]
+        struct Generic<T>(T);
+        trait Tr {
+            type Assoc;
+        }
+        impl Tr for Copy {
+            type Assoc = NotCopy;
+        }
+        #[derive(Clone)]
+        struct AssocGeneric<T: Tr>(T::Assoc);
+
+        #[derive(Clone)]
+        struct AssocGeneric2<T: Tr>(<T as Tr>::Assoc);
+
+        #[derive(Clone)]
+        struct AssocGeneric3<T: Tr>(Generic<T::Assoc>);
+
+        #[derive(Clone)]
+        struct Vec<T>();
+
+        #[derive(Clone)]
+        struct R1(Vec<R2>);
+        #[derive(Clone)]
+        struct R2(R1);
+
+        fn f() {
+            let x = (&Copy).clone();
+              //^ Copy
+            let x = (&NotCopy).clone();
+              //^ &NotCopy
+            let x = (&Generic(Copy)).clone();
+              //^ Generic<Copy>
+            let x = (&Generic(NotCopy)).clone();
+              //^ &Generic<NotCopy>
+            let x: &AssocGeneric<Copy> = &AssocGeneric(NotCopy);
+            let x = x.clone();
+              //^ &AssocGeneric<Copy>
+            let x: &AssocGeneric2<Copy> = &AssocGeneric2(NotCopy);
+            let x = x.clone();
+              //^ &AssocGeneric2<Copy>
+            let x: &AssocGeneric3<Copy> = &AssocGeneric3(Generic(NotCopy));
+            let x = x.clone();
+              //^ &AssocGeneric3<Copy>
+            let x = (&R1(Vec())).clone();
+              //^ R1
+            let x = (&R2(R1(Vec()))).clone();
+              //^ R2
+        }
+        "#,
     );
 }

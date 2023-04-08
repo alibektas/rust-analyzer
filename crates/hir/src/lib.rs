@@ -39,10 +39,10 @@ use arrayvec::ArrayVec;
 use base_db::{CrateDisplayName, CrateId, CrateOrigin, Edition, FileId, ProcMacroKind};
 use either::Either;
 use hir_def::{
-    adt::VariantData,
     body::{BodyDiagnostic, SyntheticSyntax},
-    expr::{BindingAnnotation, BindingId, ExprOrPatId, LabelId, Pat},
+    data::adt::VariantData,
     generics::{LifetimeParamData, TypeOrConstParamData, TypeParamProvenance},
+    hir::{BindingAnnotation, BindingId, ExprOrPatId, LabelId, Pat},
     item_tree::ItemTreeNode,
     lang_item::{LangItem, LangItemTarget},
     layout::{Layout, LayoutError, ReprOptions},
@@ -88,9 +88,10 @@ pub use crate::{
         AnyDiagnostic, BreakOutsideOfLoop, ExpectedFunction, InactiveCode, IncoherentImpl,
         IncorrectCase, InvalidDeriveTarget, MacroError, MalformedDerive, MismatchedArgCount,
         MissingFields, MissingMatchArms, MissingUnsafe, NeedMut, NoSuchField, PrivateAssocItem,
-        PrivateField, ReplaceFilterMapNextWithFindMap, TypeMismatch, UnimplementedBuiltinMacro,
-        UnresolvedExternCrate, UnresolvedField, UnresolvedImport, UnresolvedMacroCall,
-        UnresolvedMethodCall, UnresolvedModule, UnresolvedProcMacro, UnusedMut,
+        PrivateField, ReplaceFilterMapNextWithFindMap, TypeMismatch, UndeclaredLabel,
+        UnimplementedBuiltinMacro, UnreachableLabel, UnresolvedExternCrate, UnresolvedField,
+        UnresolvedImport, UnresolvedMacroCall, UnresolvedMethodCall, UnresolvedModule,
+        UnresolvedProcMacro, UnusedMut,
     },
     has_source::HasSource,
     semantics::{PathResolution, Semantics, SemanticsScope, TypeInfo, VisibleTraits},
@@ -108,9 +109,8 @@ pub use crate::{
 pub use {
     cfg::{CfgAtom, CfgExpr, CfgOptions},
     hir_def::{
-        adt::StructKind,
-        attr::{Attrs, AttrsWithOwner, Documentation},
-        builtin_attr::AttributeTemplate,
+        attr::{builtin::AttributeTemplate, Attrs, AttrsWithOwner, Documentation},
+        data::adt::StructKind,
         find_path::PrefixKind,
         import_map,
         nameres::ModuleSource,
@@ -1393,6 +1393,12 @@ impl DefWithBody {
                     }
                     .into(),
                 ),
+                BodyDiagnostic::UnreachableLabel { node, name } => {
+                    acc.push(UnreachableLabel { node: node.clone(), name: name.clone() }.into())
+                }
+                BodyDiagnostic::UndeclaredLabel { node, name } => {
+                    acc.push(UndeclaredLabel { node: node.clone(), name: name.clone() }.into())
+                }
             }
         }
 
@@ -1404,14 +1410,6 @@ impl DefWithBody {
                 &hir_ty::InferenceDiagnostic::NoSuchField { expr } => {
                     let field = source_map.field_syntax(expr);
                     acc.push(NoSuchField { field }.into())
-                }
-                &hir_ty::InferenceDiagnostic::BreakOutsideOfLoop {
-                    expr,
-                    is_break,
-                    bad_value_break,
-                } => {
-                    let expr = expr_syntax(expr);
-                    acc.push(BreakOutsideOfLoop { expr, is_break, bad_value_break }.into())
                 }
                 &hir_ty::InferenceDiagnostic::MismatchedArgCount { call_expr, expected, found } => {
                     acc.push(
@@ -1483,6 +1481,14 @@ impl DefWithBody {
                         }
                         .into(),
                     )
+                }
+                &hir_ty::InferenceDiagnostic::BreakOutsideOfLoop {
+                    expr,
+                    is_break,
+                    bad_value_break,
+                } => {
+                    let expr = expr_syntax(expr);
+                    acc.push(BreakOutsideOfLoop { expr, is_break, bad_value_break }.into())
                 }
             }
         }
@@ -1838,7 +1844,7 @@ impl Param {
     }
 
     pub fn name(&self, db: &dyn HirDatabase) -> Option<Name> {
-        db.function_data(self.func.id).params[self.idx].0.clone()
+        Some(self.as_local(db)?.name(db))
     }
 
     pub fn as_local(&self, db: &dyn HirDatabase) -> Option<Local> {
@@ -1879,7 +1885,7 @@ impl SelfParam {
         func_data
             .params
             .first()
-            .map(|(_, param)| match &**param {
+            .map(|param| match &**param {
                 TypeRef::Reference(.., mutability) => match mutability {
                     hir_def::type_ref::Mutability::Shared => Access::Shared,
                     hir_def::type_ref::Mutability::Mut => Access::Exclusive,
@@ -2690,9 +2696,7 @@ impl BuiltinAttr {
     }
 
     fn builtin(name: &str) -> Option<Self> {
-        hir_def::builtin_attr::INERT_ATTRIBUTES
-            .iter()
-            .position(|tool| tool.name == name)
+        hir_def::attr::builtin::find_builtin_attr_idx(name)
             .map(|idx| BuiltinAttr { krate: None, idx: idx as u32 })
     }
 
@@ -2700,14 +2704,14 @@ impl BuiltinAttr {
         // FIXME: Return a `Name` here
         match self.krate {
             Some(krate) => db.crate_def_map(krate).registered_attrs()[self.idx as usize].clone(),
-            None => SmolStr::new(hir_def::builtin_attr::INERT_ATTRIBUTES[self.idx as usize].name),
+            None => SmolStr::new(hir_def::attr::builtin::INERT_ATTRIBUTES[self.idx as usize].name),
         }
     }
 
     pub fn template(&self, _: &dyn HirDatabase) -> Option<AttributeTemplate> {
         match self.krate {
             Some(_) => None,
-            None => Some(hir_def::builtin_attr::INERT_ATTRIBUTES[self.idx as usize].template),
+            None => Some(hir_def::attr::builtin::INERT_ATTRIBUTES[self.idx as usize].template),
         }
     }
 }
@@ -2730,7 +2734,7 @@ impl ToolModule {
     }
 
     fn builtin(name: &str) -> Option<Self> {
-        hir_def::builtin_attr::TOOL_MODULES
+        hir_def::attr::builtin::TOOL_MODULES
             .iter()
             .position(|&tool| tool == name)
             .map(|idx| ToolModule { krate: None, idx: idx as u32 })
@@ -2740,7 +2744,7 @@ impl ToolModule {
         // FIXME: Return a `Name` here
         match self.krate {
             Some(krate) => db.crate_def_map(krate).registered_tools()[self.idx as usize].clone(),
-            None => SmolStr::new(hir_def::builtin_attr::TOOL_MODULES[self.idx as usize]),
+            None => SmolStr::new(hir_def::attr::builtin::TOOL_MODULES[self.idx as usize]),
         }
     }
 }

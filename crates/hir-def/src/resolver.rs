@@ -12,8 +12,8 @@ use crate::{
     body::scope::{ExprScopes, ScopeId},
     builtin_type::BuiltinType,
     db::DefDatabase,
-    expr::{BindingId, ExprId, LabelId},
     generics::{GenericParams, TypeOrConstParamData},
+    hir::{BindingId, ExprId, LabelId},
     item_scope::{BuiltinShadowMode, BUILTIN_SCOPE},
     lang_item::LangItemTarget,
     nameres::DefMap,
@@ -79,7 +79,7 @@ enum Scope {
     ExprScope(ExprScope),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TypeNs {
     SelfType(ImplId),
     GenericParam(TypeParamId),
