@@ -98,13 +98,38 @@ fn generate_record_deref(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<(
 
 ### How to check if a trait is implemented for a type?
 
-An example comes from [here](./crates/ide-assists/src/handlers/generate_deref.rs).
+An example comes from [here](./crates/ide-assists/src/handlers/generate_deref.rs#L150).
 
 ```rust
+ fn existing_deref_impl(
+    sema: &hir::Semantics<'_, RootDatabase>,
+    strukt: &ast::Struct,
+) -> Option<DerefType> {
+    let strukt = sema.to_def(strukt)?;
+    let krate = strukt.module(sema.db).krate();
 
-    
+    let deref_trait = FamousDefs(sema, krate).core_ops_Deref()?;
+    let deref_mut_trait = FamousDefs(sema, krate).core_ops_DerefMut()?;
+    let strukt_type = strukt.ty(sema.db);
+
+    if strukt_type.impls_trait(sema.db, deref_trait, &[]) {
+        if strukt_type.impls_trait(sema.db, deref_mut_trait, &[]) {
+            Some(DerefType::DerefMut)
+        } else {
+            Some(DerefType::Deref)
+        }
+    } else {
+        None
+    }
+}   
 ```
+[This](crates/ide-db/src/famous_defs.rs) module will be important at some point.
+Same goes for `Struct::impls_trait`
 
+### How to generate code ?
+
+As far as I can tell there are two different approaches each of which are used resp. in [here](./crates/ide-assists/src/handlers/generate_deref.rs#L122) and [here](./crates/ide-assists/src/handlers/generate_delegate_methods.rs#L95)
+ 
 ## Steps
 
 1. Q : 
