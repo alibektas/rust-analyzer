@@ -306,9 +306,16 @@ fn generate_impl(
 
             if let Some(im) = ctx.sema.to_def(&delegee.1) {
                 let impl_hir = hir::Impl::from(im);
-                let attrs = abc.attrs(db);
-                // Is test ?
-                attrs.is_test();
+                for item in impl_hir.items(db) {
+                    match item {
+                        hir::AssocItem::Function(i) => {
+                            let attr = hir::HasAttrs::attrs(i, db);
+                            attr.is_test();
+                        }
+                        hir::AssocItem::Const(_) => todo!(),
+                        hir::AssocItem::TypeAlias(_) => todo!(),
+                    }
+                }
             }
 
             delegate = make::impl_trait(
