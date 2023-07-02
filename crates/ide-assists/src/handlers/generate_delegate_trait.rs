@@ -303,6 +303,14 @@ fn generate_impl(
         Delegee::Impls(delegee) => {
             let in_file = ctx.sema.source(delegee.1.to_owned()).unwrap();
             source = in_file.value;
+
+            if let Some(im) = ctx.sema.to_def(&delegee.1) {
+                let impl_hir = hir::Impl::from(im);
+                let attrs = abc.attrs(db);
+                // Is test ?
+                attrs.is_test();
+            }
+
             delegate = make::impl_trait(
                 delegee.0.is_unsafe(db),
                 source.generic_param_list(),
