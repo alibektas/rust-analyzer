@@ -1897,4 +1897,43 @@ fn foo(t: E) {
 }"#,
         );
     }
+
+    /// See
+    #[test]
+    fn avoid_duplicate_arms_with_imported_variants() {
+        check_assist(
+            add_missing_match_arms,
+            r#"
+mod m {
+    pub enum E {
+        A,
+        B,
+    }
+}
+
+use m::E::{self, *};
+
+fn foo(e: E) {
+    match $0e {
+        E::A => {}
+    }
+}"#,
+            r#"
+mod m {
+    pub enum E {
+        A,
+        B,
+    }
+}
+
+use m::E::{self, *};
+
+fn foo(e: E) {
+    match e {
+        E::A => {}
+        $0B => todo!()
+    }
+}"#,
+        )
+    }
 }
