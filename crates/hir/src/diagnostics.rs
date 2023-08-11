@@ -65,6 +65,7 @@ diagnostics![
     UnresolvedModule,
     UnresolvedProcMacro,
     UnusedMut,
+    CodeGraying,
 ];
 
 #[derive(Debug)]
@@ -265,4 +266,10 @@ pub struct UnusedMut {
 pub struct MovedOutOfRef {
     pub ty: Type,
     pub span: InFile<SyntaxNodePtr>,
+}
+
+#[derive(Debug)]
+pub struct CodeGraying {
+    pub span:
+        Either<InFile<Either<AstPtr<ast::Pat>, AstPtr<ast::SelfParam>>>, InFile<AstPtr<ast::Expr>>>,
 }

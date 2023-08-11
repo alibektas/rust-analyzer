@@ -56,6 +56,7 @@ mod handlers {
     pub(crate) mod unresolved_proc_macro;
     pub(crate) mod undeclared_label;
     pub(crate) mod unreachable_label;
+    pub(crate) mod code_graying;
 
     // The handlers below are unusual, the implement the diagnostics as well.
     pub(crate) mod field_shorthand;
@@ -369,6 +370,7 @@ pub fn diagnostics(
             AnyDiagnostic::UnresolvedProcMacro(d) => handlers::unresolved_proc_macro::unresolved_proc_macro(&ctx, &d, config.proc_macros_enabled, config.proc_attr_macros_enabled),
             AnyDiagnostic::UnusedMut(d) => handlers::mutability_errors::unused_mut(&ctx, &d),
             AnyDiagnostic::BreakOutsideOfLoop(d) => handlers::break_outside_of_loop::break_outside_of_loop(&ctx, &d),
+            AnyDiagnostic::CodeGraying(d) => handlers::code_graying::code_graying(&ctx , &d)
         };
         res.push(d)
     }

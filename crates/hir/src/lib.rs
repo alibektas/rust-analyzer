@@ -37,6 +37,7 @@ use std::{iter, ops::ControlFlow};
 
 use arrayvec::ArrayVec;
 use base_db::{CrateDisplayName, CrateId, CrateOrigin, Edition, FileId, ProcMacroKind};
+use diagnostics::CodeGraying;
 use either::Either;
 use hir_def::{
     body::{BodyDiagnostic, SyntheticSyntax},
@@ -1449,6 +1450,27 @@ impl DefWithBody {
         let krate = self.module(db).id.krate();
 
         let (body, source_map) = db.body_with_source_map(self.into());
+
+        for expr in body.exprs.iter() {
+            match source_map.expr_syntax(expr.0) {
+                Ok(o) => acc.push(AnyDiagnostic::CodeGraying(Box::new(CodeGraying {
+                    span: Either::Right(o),
+                }))),
+                Err(e) => todo!(),
+            }
+        }
+
+        for pat in body.pats.iter() {
+            match source_map.pat_syntax(pat.0) {
+                Ok(p) => {
+                    eprintln!("Managed to come this far.");
+                    acc.push(AnyDiagnostic::CodeGraying(Box::new(CodeGraying {
+                        span: Either::Left(p),
+                    })))
+                }
+                Err(_) => todo!(),
+            };
+        }
 
         for (_, def_map) in body.blocks(db.upcast()) {
             for diag in def_map.diagnostics() {
