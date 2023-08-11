@@ -1440,6 +1440,7 @@ impl DefWithBody {
     /// A textual representation of the MIR of this def's body for debugging purposes.
     pub fn debug_mir(self, db: &dyn HirDatabase) -> String {
         let body = db.mir_body(self.id());
+        let a = body.unwrap();
         match body {
             Ok(body) => body.pretty_print(db),
             Err(e) => format!("error:\n{e:?}"),
