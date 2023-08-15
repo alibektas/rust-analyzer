@@ -37,7 +37,6 @@ use std::{iter, ops::ControlFlow};
 
 use arrayvec::ArrayVec;
 use base_db::{CrateDisplayName, CrateId, CrateOrigin, Edition, FileId, ProcMacroKind};
-use diagnostics::CodeGraying;
 use either::Either;
 use hir_def::{
     body::{BodyDiagnostic, SyntheticSyntax},
@@ -67,7 +66,7 @@ use hir_ty::{
     known_const_to_ast,
     layout::{Layout as TyLayout, RustcEnumVariantIdx, TagEncoding},
     method_resolution::{self, TyFingerprint},
-    mir::{self, interpret_mir},
+    mir::{self, interpret_mir, mir_body_for_closure_query},
     primitive::UintTy,
     traits::FnTrait,
     AliasTy, CallableDefId, CallableSig, Canonical, CanonicalVarKinds, Cast, ClosureId, GenericArg,
@@ -1440,7 +1439,6 @@ impl DefWithBody {
     /// A textual representation of the MIR of this def's body for debugging purposes.
     pub fn debug_mir(self, db: &dyn HirDatabase) -> String {
         let body = db.mir_body(self.id());
-        let a = body.unwrap();
         match body {
             Ok(body) => body.pretty_print(db),
             Err(e) => format!("error:\n{e:?}"),
@@ -1451,26 +1449,24 @@ impl DefWithBody {
         let krate = self.module(db).id.krate();
 
         let (body, source_map) = db.body_with_source_map(self.into());
-
-        for expr in body.exprs.iter() {
-            match source_map.expr_syntax(expr.0) {
-                Ok(o) => acc.push(AnyDiagnostic::CodeGraying(Box::new(CodeGraying {
-                    span: Either::Right(o),
-                }))),
-                Err(e) => todo!(),
-            }
-        }
-
-        for pat in body.pats.iter() {
-            match source_map.pat_syntax(pat.0) {
-                Ok(p) => {
-                    eprintln!("Managed to come this far.");
-                    acc.push(AnyDiagnostic::CodeGraying(Box::new(CodeGraying {
-                        span: Either::Left(p),
-                    })))
+        let mir_body = db.mir_body(self.id()).unwrap();
+        let sblok = &mir_body.basic_blocks[mir_body.start_block];
+        mir_body
+        for stmt in &sblok.statements {
+            match stmt.span {
+                mir::MirSpan::ExprId(eid) => {
+                    let v = source_map.expr_syntax(eid).unwrap().value;
+                    eprintln!("{:?}", v);
                 }
-                Err(_) => todo!(),
-            };
+                mir::MirSpan::PatId(pid) => {
+                    let v = source_map.pat_syntax(pid).unwrap().value;
+                    match v {
+                        Either::Left(l) => eprintln!("{:?}", l),
+                        Either::Right(r) => eprintln!("{:?}", r),
+                    }
+                }
+                mir::MirSpan::Unknown => todo!(),
+            }
         }
 
         for (_, def_map) in body.blocks(db.upcast()) {
