@@ -38,6 +38,10 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
     let src_ty = ctx.sema.resolve_type(&tgt_field.ty()?)?;
 
     if let Some(hir::Adt::Struct(src_strukt)) = src_ty.as_adt() {
+        let src_strukt_kind = match src_strukt.kind(db) {
+            hir::StructKind::Unit => return None,
+            kind => kind,
+        };
         let tgt_hir_strukt = ctx.sema.to_def(&tgt_strukt)?;
         let tgt_scope = ctx.sema.scope(&tgt_strukt.syntax())?;
         let tgt_module = tgt_hir_strukt.module(db);
@@ -47,13 +51,13 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
             return None;
         }
 
-        // if let Some(name) = tgt_scope.module().name(db) {
-        //     eprintln!("Target scope name {}", name.to_smol_str());
-        // }
+        if let Some(name) = tgt_scope.module().name(db) {
+            eprintln!("Target scope name {}", name.to_smol_str());
+        }
 
-        // if let Some(name) = src_scope.module().name(db) {
-        //     eprintln!("Source scope name {}", name.to_smol_str());
-        // }
+        if let Some(name) = src_strukt.module(db).name(db) {
+            eprintln!("Source scope name {}", name.to_smol_str());
+        }
 
         let flds = src_strukt
             .fields(db)
@@ -62,32 +66,33 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
                 if !field.is_visible_from(db, tgt_module) {
                     return None;
                 }
-                field.source(db)
+
+                let fty = field.ty(db);
+                Some(field)
             })
             .enumerate()
-            .filter_map(|(idx, fld)| match fld.value {
-                FieldSource::Named(n) => {
-                    eprintln!("HEY BR");
-                    let name = n.name()?.to_string();
+            .filter_map(|(idx, fld)| {
+                let targeted_ty =
+                    if let Ok(tty) = fld.ty(db).display_source_code(db, tgt_module.into(), false) {
+                        tty
+                    } else {
+                        return None;
+                    };
 
-                    dbg!(&name);
-                    let ty = n.ty()?;
-                    dbg!(&ty);
-
-                    // eprintln!("Before transformation {}", ty.to_string());
-                    // pt.apply(&ty.syntax());
-                    // eprintln!("After transformation {}", ty.to_string());
-
+                if let hir::StructKind::Record = src_strukt_kind {
                     Some(format!(
                         "{}_{} : {}",
                         tgt_field_name.to_string(),
-                        name.to_string(),
-                        ty.to_string()
+                        fld.name(db).as_text()?,
+                        targeted_ty
                     ))
-                }
-                FieldSource::Pos(p) => {
-                    let ty = p.ty()?;
-                    Some(format!("{}_{} : {}", tgt_field_name.to_string(), idx, ty.to_string(),))
+                } else {
+                    Some(format!(
+                        "{}_{} : {}",
+                        tgt_field_name.to_string(),
+                        fld.name(db).as_tuple_index()?,
+                        targeted_ty
+                    ))
                 }
             })
             .collect::<Vec<String>>();
@@ -183,7 +188,21 @@ mod K {
 struct B {
     $0i: K::A,
 }"#,
-            r#""#,
+            r#"
+mod K {
+
+    pub struct C;
+    struct D;
+
+    pub(super) struct A {
+        pub i: C,
+        j: D,
+    }
+}
+
+struct B {
+    i_i : K::C,
+}"#,
         );
     }
 }
