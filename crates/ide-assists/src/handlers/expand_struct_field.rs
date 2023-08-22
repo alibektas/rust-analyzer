@@ -1,18 +1,8 @@
-use std::{ops::Deref, rc::Rc};
-
 use crate::assist_context::{AssistContext, Assists};
-use either::Either;
-use hir::{
-    db::ExpandDatabase, FieldSource, HasSource, HasVisibility, HirDisplay, InFile, PathResolution,
-    SemanticsScope,
-};
-use ide_db::{
-    assists::{AssistId, AssistKind},
-    path_transform::{self, PathTransform},
-};
-use itertools::Itertools;
+use hir::{HasSource, HasVisibility, HirDisplay};
+use ide_db::assists::{AssistId, AssistKind};
 use syntax::{
-    ast::{self, edit::IndentLevel, edit_in_place::HasVisibilityEdit, HasName},
+    ast::{self, edit::IndentLevel, HasName, HasVisibility as AstVisibility, Lifetime},
     AstNode,
 };
 
@@ -38,12 +28,17 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
     let src_ty = ctx.sema.resolve_type(&tgt_field.ty()?)?;
 
     if let Some(hir::Adt::Struct(src_strukt)) = src_ty.as_adt() {
+        let tgt_field_vis = if let Some(vis) = tgt_field.visibility() {
+            format!("{} ", vis.to_string())
+        } else {
+            "".to_string()
+        };
+
         let src_strukt_kind = match src_strukt.kind(db) {
             hir::StructKind::Unit => return None,
             kind => kind,
         };
         let tgt_hir_strukt = ctx.sema.to_def(&tgt_strukt)?;
-        let tgt_scope = ctx.sema.scope(&tgt_strukt.syntax())?;
         let tgt_module = tgt_hir_strukt.module(db);
         let tgt_field = tgt_field.clone_for_update();
 
@@ -51,12 +46,15 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
             return None;
         }
 
-        if let Some(name) = tgt_scope.module().name(db) {
-            eprintln!("Target scope name {}", name.to_smol_str());
-        }
+        let src_strukt_ast = src_strukt.source(db)?.value;
 
-        if let Some(name) = src_strukt.module(db).name(db) {
-            eprintln!("Source scope name {}", name.to_smol_str());
+        match src_strukt_ast.field_list()? {
+            ast::FieldList::RecordFieldList(fl) => {
+                fl.fields().into_iter().map(|field| {
+                    field.life;
+                });
+            }
+            ast::FieldList::TupleFieldList(tl) => todo!(),
         }
 
         let flds = src_strukt
@@ -67,11 +65,9 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
                     return None;
                 }
 
-                let fty = field.ty(db);
                 Some(field)
             })
-            .enumerate()
-            .filter_map(|(idx, fld)| {
+            .filter_map(|fld| {
                 let targeted_ty =
                     if let Ok(tty) = fld.ty(db).display_source_code(db, tgt_module.into(), false) {
                         tty
@@ -79,21 +75,17 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
                         return None;
                     };
 
-                if let hir::StructKind::Record = src_strukt_kind {
-                    Some(format!(
-                        "{}_{} : {}",
-                        tgt_field_name.to_string(),
-                        fld.name(db).as_text()?,
-                        targeted_ty
-                    ))
-                } else {
-                    Some(format!(
-                        "{}_{} : {}",
-                        tgt_field_name.to_string(),
-                        fld.name(db).as_tuple_index()?,
-                        targeted_ty
-                    ))
-                }
+                Some(format!(
+                    "{}{}_{} : {}",
+                    tgt_field_vis,
+                    if let hir::StructKind::Record = src_strukt_kind {
+                        tgt_field_name.to_string()
+                    } else {
+                        tgt_field_name.to_string()
+                    },
+                    fld.name(db).as_text()?,
+                    targeted_ty
+                ))
             })
             .collect::<Vec<String>>();
 
@@ -123,86 +115,133 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
 #[cfg(test)]
 mod tests {
 
-    use crate::tests::check_assist;
-
     use super::*;
+    use crate::tests::{check_assist, check_assist_not_applicable};
 
     #[test]
-    fn deneme() {
+    fn src_in_same_mod() {
         check_assist(
             expand_struct_field,
             r#"
 struct A {
     i : i32,
-    j : i32,                
+    j : i32,
 }
 
 struct B {
     k$0 : A
-}
-"#,
-            "",
-        )
-    }
-
-    #[test]
-    fn dep_is_generated_by_macro() {
-        check_assist(
-            expand_struct_field,
-            r#"
-macro_rules! create_struct {
-    ($struct_name:ident , $($field_name:ident , $field_type:ty),*) => {
-        pub struct $struct_name {
-            $(
-                $field_name: $field_type,
-            )*
-        }
-    };
-}
-create_struct!(B, a, i32, b, i32);
-
+}"#,
+            "
 struct A {
-    i: i32,
-    j$0: B,
-}"#,
-            r#""#,
+    i : i32,
+    j : i32,
+}
+
+struct B {
+    k_i : i32,
+    k_j : i32
+}",
         )
     }
 
     #[test]
-    fn tgt_local_in_child_mod() {
+    fn src_not_vis() {
+        check_assist_not_applicable(
+            expand_struct_field,
+            r#"
+mod k {
+    struct Source {
+        x: i32,
+        y: i32,
+    }
+}
+
+struct Target {
+    pub x$0y : k::Source,
+    pub z : i32,
+}"#,
+        )
+    }
+
+    #[test]
+    fn src_in_sibling_mod() {
         check_assist(
             expand_struct_field,
             r#"
-mod K {
-
-    pub struct C;
-    struct D;
-
-    pub(super) struct A {
-        pub i: C,
-        j: D,
+mod k {
+    pub(super) struct Source {
+        pub x: i32,
+        pub y: i32,
     }
 }
 
-struct B {
-    $0i: K::A,
+struct Target {
+    pub x$0y : k::Source,
+    pub z : i32,
 }"#,
             r#"
-mod K {
-
-    pub struct C;
-    struct D;
-
-    pub(super) struct A {
-        pub i: C,
-        j: D,
+mod k {
+    pub(super) struct Source {
+        pub x: i32,
+        pub y: i32,
     }
 }
 
-struct B {
-    i_i : K::C,
+struct Target {
+    pub xy_x : i32,
+    pub xy_y : i32,
+    pub z : i32,
 }"#,
         );
+    }
+
+    #[test]
+    fn src_in_sibling_mod_no_vis_fields() {
+        check_assist_not_applicable(
+            expand_struct_field,
+            r#"
+mod k {
+    pub(super) struct Source {
+        x: i32,
+        y: i32,
+    }
+}
+
+struct Target {
+    pub x$0y : k::Source,
+    pub z : i32,
+}"#,
+        )
+    }
+
+    #[test]
+    fn src_in_sibling_mod_some_vis_fields() {
+        check_assist(
+            expand_struct_field,
+            r#"
+mod k {
+    pub(super) struct Source {
+        pub(super) x: i32,
+        y: i32,
+    }
+}
+
+struct Target {
+    pub x$0y : k::Source,
+    pub z : i32,
+}"#,
+            r#"
+mod k {
+    pub(super) struct Source {
+        pub(super) x: i32,
+        y: i32,
+    }
+}
+
+struct Target {
+    pub xy_x : i32,
+    pub z : i32,
+}"#,
+        )
     }
 }
