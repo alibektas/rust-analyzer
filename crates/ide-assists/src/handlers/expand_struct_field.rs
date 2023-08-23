@@ -2,7 +2,7 @@ use crate::assist_context::{AssistContext, Assists};
 use hir::{HasSource, HasVisibility, HirDisplay};
 use ide_db::assists::{AssistId, AssistKind};
 use syntax::{
-    ast::{self, edit::IndentLevel, HasName, HasVisibility as AstVisibility, Lifetime},
+    ast::{self, edit::IndentLevel, HasName, HasVisibility as AstVisibility, Lifetime, RefType},
     AstNode,
 };
 
@@ -41,20 +41,24 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
         let tgt_hir_strukt = ctx.sema.to_def(&tgt_strukt)?;
         let tgt_module = tgt_hir_strukt.module(db);
         let tgt_field = tgt_field.clone_for_update();
+        let tgt_field_ty = tgt_field.ty()?;
+
+        #[rustfmt::skip]
+        let ref_prefix: TypeKind  = 
+            if let ast::Type::RefType(rf) = tgt_field_ty {
+                if let Some(mut_token) = rf.mut_token() {
+                    TypeKind::Mut(RefTy { lifetime: rf.lifetime()?.to_string() })
+                } else {
+                    TypeKind::Shared(RefTy { lifetime : rf.lifetime()?.to_string()})
+                }
+            } else {
+                TypeKind::Owned
+            };
+
+        
 
         if !src_strukt.is_visible_from(db, tgt_module) {
             return None;
-        }
-
-        let src_strukt_ast = src_strukt.source(db)?.value;
-
-        match src_strukt_ast.field_list()? {
-            ast::FieldList::RecordFieldList(fl) => {
-                fl.fields().into_iter().map(|field| {
-                    field.life;
-                });
-            }
-            ast::FieldList::TupleFieldList(tl) => todo!(),
         }
 
         let flds = src_strukt
@@ -69,14 +73,14 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
             })
             .filter_map(|fld| {
                 let targeted_ty =
-                    if let Ok(tty) = fld.ty(db).display_source_code(db, tgt_module.into(), false) {
+                    if let Ok(tty) = fld.ty(db).display_source_code(db, tgt_module.into(), true) {
                         tty
                     } else {
                         return None;
                     };
 
                 Some(format!(
-                    "{}{}_{} : {}",
+                    "{}{}_{} :{}",
                     tgt_field_vis,
                     if let hir::StructKind::Record = src_strukt_kind {
                         tgt_field_name.to_string()
@@ -110,6 +114,17 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
     }
 
     Some(())
+}
+
+
+enum TypeKind {
+    Mut(RefTy),
+    Shared(RefTy),
+    Owned
+} 
+
+struct RefTy {
+    lifetime : String,
 }
 
 #[cfg(test)]
@@ -241,6 +256,32 @@ mod k {
 struct Target {
     pub xy_x : i32,
     pub z : i32,
+}"#,
+        )
+    }
+
+    #[test]
+    fn src_has_lifetimes() {
+        check_assist(
+            expand_struct_field,
+            r#"
+struct Source<'a , 'b> {
+    a : &'a str,
+    b : &'b str
+}
+
+struct Target<'a> {
+    sr$0c : Source<'a, 'a>
+}"#,
+            r#"
+struct Source<'a , 'b> {
+    a : &'a str,
+    b : &'b str
+}
+
+struct Target<'a> {
+    src_a : &'a str,
+    src_b : &'a str
 }"#,
         )
     }
