@@ -1,27 +1,38 @@
 use crate::{Diagnostic, DiagnosticCode, DiagnosticsContext};
-use hir::diagnostics::CodeGraying;
+use hir::diagnostics::{CodeGraying, CodeUngraying};
 
 pub(crate) fn code_graying(ctx: &DiagnosticsContext<'_>, d: &Box<CodeGraying>) -> Diagnostic {
     let range = match &d.span {
-        either::Either::Left(l) => match &l.value {
-            either::Either::Left(l1) => {
-                eprintln!("{:?}", l1);
-                l1.text_range()
-            }
-            either::Either::Right(l2) => {
-                eprintln!("{:?}", l2);
-                l2.text_range()
-            }
+        either::Either::Left(span) => span.value.syntax_node_ptr().text_range(),
+        either::Either::Right(span) => match &span.value {
+            either::Either::Left(sl) => sl.text_range(),
+            either::Either::Right(sr) => sr.text_range(),
         },
-        either::Either::Right(r) => {
-            eprintln!("{:?}", r);
-            r.value.text_range()
-        }
     };
-
     Diagnostic {
         code: DiagnosticCode::Ra("Code grayin", crate::Severity::Error),
         message: "GRAYING".into(),
+        range,
+        severity: crate::Severity::Warning,
+        unused: true,
+        experimental: false,
+        fixes: None,
+        main_node: None,
+    }
+}
+
+pub(crate) fn code_ungraying(ctx: &DiagnosticsContext<'_>, d: &Box<CodeUngraying>) -> Diagnostic {
+    let range = match &d.span {
+        either::Either::Left(span) => span.value.syntax_node_ptr().text_range(),
+        either::Either::Right(span) => match &span.value {
+            either::Either::Left(sl) => sl.text_range(),
+            either::Either::Right(sr) => sr.text_range(),
+        },
+    };
+
+    Diagnostic {
+        code: DiagnosticCode::Ra("Code ungrayin", crate::Severity::Error),
+        message: "UNGRAYING".into(),
         range,
         severity: crate::Severity::Warning,
         unused: true,
@@ -36,20 +47,21 @@ mod tests {
     use crate::tests::check_diagnostics;
 
     #[test]
-    fn no_such_field_diagnostics() {
+    fn deneme() {
         check_diagnostics(
             r#"
-struct S { foo: i32, bar: () }
-impl S {
-    fn new() -> S {
-        S {
-      //^ 💡 error: missing structure fields:
-      //|    - bar
-            foo: 92,
-            baz: 62,
-          //^^^^^^^ 💡 error: no such field
-        }
+fn abc() -> i32 {
+    let i = 3 ;
+    
+
+    if i > 5 {
+        return 4;
+        let i = 5;
+    } else {
+        panic!("ABC");
     }
+
+    3
 }
 "#,
         );

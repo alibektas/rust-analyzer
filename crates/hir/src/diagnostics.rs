@@ -66,6 +66,7 @@ diagnostics![
     UnresolvedProcMacro,
     UnusedMut,
     CodeGraying,
+    CodeUngraying,
 ];
 
 #[derive(Debug)]
@@ -271,5 +272,11 @@ pub struct MovedOutOfRef {
 #[derive(Debug)]
 pub struct CodeGraying {
     pub span:
-        Either<InFile<Either<AstPtr<ast::Pat>, AstPtr<ast::SelfParam>>>, InFile<AstPtr<ast::Expr>>>,
+        Either<InFile<AstPtr<ast::Expr>>, InFile<Either<AstPtr<ast::Pat>, AstPtr<ast::SelfParam>>>>,
+}
+
+#[derive(Debug)]
+pub struct CodeUngraying {
+    pub span:
+        Either<InFile<AstPtr<ast::Expr>>, InFile<Either<AstPtr<ast::Pat>, AstPtr<ast::SelfParam>>>>,
 }

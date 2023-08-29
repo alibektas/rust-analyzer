@@ -33,16 +33,21 @@ pub mod symbols;
 
 mod display;
 
-use std::{iter, ops::ControlFlow};
+use std::{
+    collections::{HashSet, VecDeque},
+    iter,
+    ops::ControlFlow,
+};
 
 use arrayvec::ArrayVec;
 use base_db::{CrateDisplayName, CrateId, CrateOrigin, Edition, FileId, ProcMacroKind};
+use diagnostics::AnyDiagnostic;
 use either::Either;
 use hir_def::{
     body::{BodyDiagnostic, SyntheticSyntax},
     data::adt::VariantData,
     generics::{LifetimeParamData, TypeOrConstParamData, TypeParamProvenance},
-    hir::{BindingAnnotation, BindingId, ExprOrPatId, LabelId, Pat},
+    hir::{self, BindingAnnotation, BindingId, ExprOrPatId, LabelId, Pat, ExprId, PatId},
     item_tree::ItemTreeNode,
     lang_item::LangItemTarget,
     layout::{self, ReprOptions, TargetDataLayout},
@@ -66,7 +71,7 @@ use hir_ty::{
     known_const_to_ast,
     layout::{Layout as TyLayout, RustcEnumVariantIdx, TagEncoding},
     method_resolution::{self, TyFingerprint},
-    mir::{self, interpret_mir, mir_body_for_closure_query},
+    mir::{self, interpret_mir, lower_to_mir, BasicBlock, BasicBlockId},
     primitive::UintTy,
     traits::FnTrait,
     AliasTy, CallableDefId, CallableSig, Canonical, CanonicalVarKinds, Cast, ClosureId, GenericArg,
@@ -78,7 +83,7 @@ use itertools::Itertools;
 use nameres::diagnostics::DefDiagnosticKind;
 use once_cell::unsync::Lazy;
 use rustc_hash::FxHashSet;
-use stdx::{impl_from, never};
+use stdx::{eprintln, impl_from, never};
 use syntax::{
     ast::{self, HasAttrs as _, HasDocComments, HasName},
     AstNode, AstPtr, SmolStr, SyntaxNode, SyntaxNodePtr, TextRange, T,
@@ -90,7 +95,7 @@ use crate::db::{DefDatabase, HirDatabase};
 pub use crate::{
     attrs::{DocLinkDef, HasAttrs},
     diagnostics::{
-        AnyDiagnostic, BreakOutsideOfLoop, CaseType, ExpectedFunction, InactiveCode,
+        BreakOutsideOfLoop, CaseType, CodeGraying, CodeUngraying, ExpectedFunction, InactiveCode,
         IncoherentImpl, IncorrectCase, InvalidDeriveTarget, MacroDefError, MacroError,
         MacroExpansionParseError, MalformedDerive, MismatchedArgCount, MissingFields,
         MissingMatchArms, MissingUnsafe, MovedOutOfRef, NeedMut, NoSuchField, PrivateAssocItem,
@@ -547,6 +552,7 @@ impl Module {
 
     /// Fills `acc` with the module's diagnostics.
     pub fn diagnostics(self, db: &dyn HirDatabase, acc: &mut Vec<AnyDiagnostic>) {
+        eprintln!("Collecting module diagnostics");
         let _p = profile::span("Module::diagnostics").detail(|| {
             format!(
                 "{:?}",
@@ -1449,31 +1455,6 @@ impl DefWithBody {
         let krate = self.module(db).id.krate();
 
         let (body, source_map) = db.body_with_source_map(self.into());
-        let mir_body = db.mir_body(self.id()).unwrap();
-        let sblok = &mir_body.basic_blocks[mir_body.start_block];
-        mir_body
-        for stmt in &sblok.statements {
-            match stmt.span {
-                mir::MirSpan::ExprId(eid) => {
-                    let v = source_map.expr_syntax(eid).unwrap().value;
-                    eprintln!("{:?}", v);
-                }
-                mir::MirSpan::PatId(pid) => {
-                    let v = source_map.pat_syntax(pid).unwrap().value;
-                    match v {
-                        Either::Left(l) => eprintln!("{:?}", l),
-                        Either::Right(r) => eprintln!("{:?}", r),
-                    }
-                }
-                mir::MirSpan::Unknown => todo!(),
-            }
-        }
-
-        for (_, def_map) in body.blocks(db.upcast()) {
-            for diag in def_map.diagnostics() {
-                emit_def_diagnostic(db, acc, diag);
-            }
-        }
 
         for diag in source_map.diagnostics() {
             match diag {
@@ -1830,6 +1811,106 @@ impl DefWithBody {
                         Err(SyntheticSyntax) => (),
                     }
                 }
+            }
+        }
+
+        let mut unreachable_exprs : HashSet<ExprId> = HashSet::new();
+        let mut unreachable_pats : HashSet<PatId> = HashSet::new();
+
+        for expr in body.exprs.iter() {
+            unreachable_exprs.insert(expr.0);
+        }
+        for pat in body.pats.iter() {
+            unreachable_pats.insert(pat.0);
+        }
+        
+        if let Ok(mir_body) = db.mir_body(self.id()) {
+            let blox = &mir_body.basic_blocks;
+            let mut block_q: VecDeque<BasicBlockId> = VecDeque::new();
+            let mut visited_basic_blocks: HashSet<BasicBlockId> = HashSet::with_capacity(blox.len());
+            block_q.push_back(mir_body.start_block.to_owned());
+            while let Some(elem) = block_q.pop_front() {
+                visited_basic_blocks.insert(elem);
+                let blok = &blox[elem];
+                blok.statements.iter().for_each(|stmt| {
+                    match stmt.span {
+                        mir::MirSpan::ExprId(expr) => {
+                            eprintln!("Removing EXPR {}" ,  expr.into_raw().into_u32());
+                            unreachable_exprs.remove(&expr);
+                        }
+                        mir::MirSpan::PatId(pat) => {
+                            eprintln!("Removing PAT {}" ,  pat.into_raw().into_u32());
+                            unreachable_pats.remove(&pat);
+                        }
+                        _ => ()
+                    };
+                });
+
+                match &blok.terminator {
+                    Some(terminator) => match &terminator.kind {
+                        mir::TerminatorKind::Goto { target } => {
+                                if !visited_basic_blocks.contains(target) {
+                                    block_q.push_back(target.to_owned())
+                                } 
+                                else {
+                                    eprintln!("visited_basic_blocks contains {:?}" ,target);
+                                }
+                        },
+                        mir::TerminatorKind::SwitchInt { discr, targets } => {
+                            for tgt in targets.all_targets() {
+                                if !visited_basic_blocks.contains(tgt) {
+                                    block_q.push_back(tgt.to_owned());
+                                } 
+                                else {
+                                    eprintln!("visited_basic_blocks contains {:?}" ,tgt);
+                                }
+                            }
+                        }
+                        mir::TerminatorKind::Drop { place, target, unwind } => {
+                            if !visited_basic_blocks.contains(target) {
+                                block_q.push_back(target.to_owned());
+                            }
+                            else {
+                                eprintln!("visited_basic_blocks contains {:?}" ,target);
+                            }
+                        }
+                        mir::TerminatorKind::Return => (),
+                        kind => eprintln!("Not yet covered {:?}" , kind)
+                        // mir::TerminatorKind::DropAndReplace { place, value, target, unwind } => todo!(),
+                        // mir::TerminatorKind::Call {
+                        //     func,
+                        //     args,
+                        //     destination,
+                        //     target,
+                        //     cleanup,
+                        //     from_hir_call,
+                        // } => todo!(),
+                        // mir::TerminatorKind::Assert { cond, expected, target, cleanup } => todo!(),
+                        // mir::TerminatorKind::Yield { value, resume, resume_arg, drop } => todo!(),
+                        // mir::TerminatorKind::GeneratorDrop => todo!(),
+                        // mir::TerminatorKind::FalseEdge { real_target, imaginary_target } => todo!(),
+                        // mir::TerminatorKind::FalseUnwind { real_target, unwind } => todo!(),
+                    },
+                    None => eprintln!("No terminator"),
+                }
+            }
+        } else {
+            eprintln!("NO MIRI FOR NOW");
+        }
+
+
+        for pat in unreachable_pats {
+            eprintln!("PAT {}" , pat.into_raw().into_u32());
+           if let Ok(st) = source_map.pat_syntax(pat) {
+                acc.push(CodeGraying { span: Either::Right(st) }.into())
+                
+            }
+        }
+
+        for expr in unreachable_exprs {
+            eprintln!("EXPR {}" , expr.into_raw().into_u32());
+            if let Ok(st) = source_map.expr_syntax(expr) {
+                acc.push(CodeGraying { span: Either::Left(st) }.into());
             }
         }
 

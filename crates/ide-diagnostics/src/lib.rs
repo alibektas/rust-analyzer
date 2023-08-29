@@ -285,6 +285,7 @@ pub fn diagnostics(
     resolve: &AssistResolveStrategy,
     file_id: FileId,
 ) -> Vec<Diagnostic> {
+    eprintln!("ide-diagnostics");
     let _p = profile::span("diagnostics");
     let sema = Semantics::new(db);
     let parse = db.parse(file_id);
@@ -370,7 +371,8 @@ pub fn diagnostics(
             AnyDiagnostic::UnresolvedProcMacro(d) => handlers::unresolved_proc_macro::unresolved_proc_macro(&ctx, &d, config.proc_macros_enabled, config.proc_attr_macros_enabled),
             AnyDiagnostic::UnusedMut(d) => handlers::mutability_errors::unused_mut(&ctx, &d),
             AnyDiagnostic::BreakOutsideOfLoop(d) => handlers::break_outside_of_loop::break_outside_of_loop(&ctx, &d),
-            AnyDiagnostic::CodeGraying(d) => handlers::code_graying::code_graying(&ctx , &d)
+            AnyDiagnostic::CodeGraying(d) => handlers::code_graying::code_graying(&ctx , &d),
+            AnyDiagnostic::CodeUngraying(d) => handlers::code_graying::code_ungraying(&ctx , &d)
         };
         res.push(d)
     }
