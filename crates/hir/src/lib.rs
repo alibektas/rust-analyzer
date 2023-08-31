@@ -47,7 +47,7 @@ use hir_def::{
     body::{BodyDiagnostic, SyntheticSyntax},
     data::adt::VariantData,
     generics::{LifetimeParamData, TypeOrConstParamData, TypeParamProvenance},
-    hir::{self, BindingAnnotation, BindingId, ExprOrPatId, LabelId, Pat, ExprId, PatId},
+    hir::{self, BindingAnnotation, BindingId, ExprId, ExprOrPatId, LabelId, Pat, PatId},
     item_tree::ItemTreeNode,
     lang_item::LangItemTarget,
     layout::{self, ReprOptions, TargetDataLayout},
@@ -1814,103 +1814,123 @@ impl DefWithBody {
             }
         }
 
-        let mut unreachable_exprs : HashSet<ExprId> = HashSet::new();
-        let mut unreachable_pats : HashSet<PatId> = HashSet::new();
-
-        for expr in body.exprs.iter() {
-            unreachable_exprs.insert(expr.0);
-        }
-        for pat in body.pats.iter() {
-            unreachable_pats.insert(pat.0);
-        }
-        
         if let Ok(mir_body) = db.mir_body(self.id()) {
+            let mut unreachable_exprs: HashSet<ExprId> = HashSet::new();
+            let mut unreachable_pats: HashSet<PatId> = HashSet::new();
+
+            for expr in body.exprs.iter() {
+                if expr.1.has_child_expr() {
+                    eprintln!("Child expr {}", expr.0.into_raw().into_u32());
+                    unreachable_exprs.insert(expr.0);
+                }
+            }
+            for pat in body.pats.iter() {
+                if pat.1.has_child_pat() {
+                    eprintln!("Child pat {}", pat.0.into_raw().into_u32());
+                    unreachable_pats.insert(pat.0);
+                }
+            }
+
             let blox = &mir_body.basic_blocks;
-            let mut block_q: VecDeque<BasicBlockId> = VecDeque::new();
-            let mut visited_basic_blocks: HashSet<BasicBlockId> = HashSet::with_capacity(blox.len());
-            block_q.push_back(mir_body.start_block.to_owned());
-            while let Some(elem) = block_q.pop_front() {
-                visited_basic_blocks.insert(elem);
+            // A which-block-should-we-next-look-at queue
+            let mut to_be_visited_blocks: VecDeque<BasicBlockId> = VecDeque::new();
+            let mut visited_blocks: HashSet<BasicBlockId> = HashSet::with_capacity(blox.len());
+            to_be_visited_blocks.push_back(mir_body.start_block.to_owned());
+            while let Some(elem) = to_be_visited_blocks.pop_front() {
+                visited_blocks.insert(elem);
                 let blok = &blox[elem];
                 blok.statements.iter().for_each(|stmt| {
                     match stmt.span {
                         mir::MirSpan::ExprId(expr) => {
-                            eprintln!("Removing EXPR {}" ,  expr.into_raw().into_u32());
+                            eprintln!("Removing EXPR {}", expr.into_raw().into_u32());
                             unreachable_exprs.remove(&expr);
                         }
                         mir::MirSpan::PatId(pat) => {
-                            eprintln!("Removing PAT {}" ,  pat.into_raw().into_u32());
+                            eprintln!("Removing PAT {}", pat.into_raw().into_u32());
                             unreachable_pats.remove(&pat);
                         }
-                        _ => ()
+                        _ => (),
                     };
                 });
 
                 match &blok.terminator {
                     Some(terminator) => match &terminator.kind {
                         mir::TerminatorKind::Goto { target } => {
-                                if !visited_basic_blocks.contains(target) {
-                                    block_q.push_back(target.to_owned())
-                                } 
-                                else {
-                                    eprintln!("visited_basic_blocks contains {:?}" ,target);
-                                }
-                        },
-                        mir::TerminatorKind::SwitchInt { discr, targets } => {
+                            if !visited_blocks.contains(target) {
+                                to_be_visited_blocks.push_back(target.to_owned())
+                            }
+                        }
+                        mir::TerminatorKind::SwitchInt { targets, discr } => {
+                            // TODO : Distinguish targets.
+                            // Something like
+                            // let i = 3;
+                            // if i == 4 {
+                            //     ...blah
+                            // }
+                            // Should result in unreachable code
                             for tgt in targets.all_targets() {
-                                if !visited_basic_blocks.contains(tgt) {
-                                    block_q.push_back(tgt.to_owned());
-                                } 
-                                else {
-                                    eprintln!("visited_basic_blocks contains {:?}" ,tgt);
+                                if !visited_blocks.contains(tgt) {
+                                    to_be_visited_blocks.push_back(tgt.to_owned());
                                 }
                             }
                         }
-                        mir::TerminatorKind::Drop { place, target, unwind } => {
-                            if !visited_basic_blocks.contains(target) {
-                                block_q.push_back(target.to_owned());
-                            }
-                            else {
-                                eprintln!("visited_basic_blocks contains {:?}" ,target);
+                        mir::TerminatorKind::Drop { target, .. } => {
+                            if !visited_blocks.contains(target) {
+                                to_be_visited_blocks.push_back(target.to_owned());
                             }
                         }
-                        mir::TerminatorKind::Return => (),
-                        kind => eprintln!("Not yet covered {:?}" , kind)
-                        // mir::TerminatorKind::DropAndReplace { place, value, target, unwind } => todo!(),
-                        // mir::TerminatorKind::Call {
-                        //     func,
-                        //     args,
-                        //     destination,
-                        //     target,
-                        //     cleanup,
-                        //     from_hir_call,
-                        // } => todo!(),
-                        // mir::TerminatorKind::Assert { cond, expected, target, cleanup } => todo!(),
-                        // mir::TerminatorKind::Yield { value, resume, resume_arg, drop } => todo!(),
-                        // mir::TerminatorKind::GeneratorDrop => todo!(),
-                        // mir::TerminatorKind::FalseEdge { real_target, imaginary_target } => todo!(),
-                        // mir::TerminatorKind::FalseUnwind { real_target, unwind } => todo!(),
+                        mir::TerminatorKind::DropAndReplace { target, unwind, .. } => {
+                            if !visited_blocks.contains(target) {
+                                to_be_visited_blocks.push_back(target.to_owned());
+                            }
+
+                            if let Some(uw) = unwind {
+                                if !visited_blocks.contains(uw) {
+                                    to_be_visited_blocks.push_back(uw.to_owned());
+                                }
+                            }
+                        }
+                        mir::TerminatorKind::Call {
+                            func,
+                            args,
+                            destination,
+                            target,
+                            cleanup,
+                            from_hir_call,
+                        } => {
+                            if let Some(target) = target {
+                                if !visited_blocks.contains(target) {
+                                    to_be_visited_blocks.push_back(target.to_owned());
+                                }
+                            }
+
+                            if let Some(cleanup) = cleanup {
+                                if !visited_blocks.contains(cleanup) {
+                                    to_be_visited_blocks.push_back(cleanup.to_owned());
+                                }
+                            }
+                        }
+                        mir::TerminatorKind::Assert { cond, expected, target, cleanup } => {}
+                        mir::TerminatorKind::Yield { value, resume, resume_arg, drop } => todo!(),
+                        mir::TerminatorKind::GeneratorDrop => todo!(),
+                        mir::TerminatorKind::FalseEdge { real_target, imaginary_target } => todo!(),
+                        mir::TerminatorKind::FalseUnwind { real_target, unwind } => todo!(),
+                        _ => {}
                     },
                     None => eprintln!("No terminator"),
                 }
             }
-        } else {
-            eprintln!("NO MIRI FOR NOW");
-        }
 
-
-        for pat in unreachable_pats {
-            eprintln!("PAT {}" , pat.into_raw().into_u32());
-           if let Ok(st) = source_map.pat_syntax(pat) {
-                acc.push(CodeGraying { span: Either::Right(st) }.into())
-                
+            for pat in unreachable_pats {
+                if let Ok(st) = source_map.pat_syntax(pat) {
+                    acc.push(CodeGraying { span: Either::Right(st) }.into())
+                }
             }
-        }
 
-        for expr in unreachable_exprs {
-            eprintln!("EXPR {}" , expr.into_raw().into_u32());
-            if let Ok(st) = source_map.expr_syntax(expr) {
-                acc.push(CodeGraying { span: Either::Left(st) }.into());
+            for expr in unreachable_exprs {
+                if let Ok(st) = source_map.expr_syntax(expr) {
+                    acc.push(CodeGraying { span: Either::Left(st) }.into());
+                }
             }
         }
 

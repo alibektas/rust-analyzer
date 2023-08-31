@@ -338,6 +338,17 @@ pub enum Statement {
 }
 
 impl Expr {
+    pub fn has_child_expr(&self) -> bool {
+        match self {
+            Expr::Missing
+            | Expr::Path(_)
+            | Expr::Const(_)
+            | Expr::Continue { .. }
+            | Expr::Literal(_)
+            | Expr::Underscore => true,
+            _ => false,
+        }
+    }
     pub fn walk_child_exprs(&self, mut f: impl FnMut(ExprId)) {
         match self {
             Expr::Missing => {}
@@ -521,6 +532,18 @@ pub enum Pat {
 }
 
 impl Pat {
+    pub fn has_child_pat(&self) -> bool {
+        match self {
+            Pat::Range { .. }
+            | Pat::Lit(..)
+            | Pat::Path(..)
+            | Pat::ConstBlock(..)
+            | Pat::Wild
+            | Pat::Missing => true,
+            _ => false,
+        }
+    }
+
     pub fn walk_child_pats(&self, mut f: impl FnMut(PatId)) {
         match self {
             Pat::Range { .. }
