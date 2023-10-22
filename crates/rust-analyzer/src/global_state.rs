@@ -353,7 +353,6 @@ impl GlobalState {
             }
             (change, modified_rust_files, workspace_structure_change)
         };
-
         self.analysis_host.apply_change(change);
 
         {

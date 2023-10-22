@@ -443,6 +443,8 @@ impl GlobalState {
                                 format!("{it}/**/*.rs"),
                                 format!("{it}/**/Cargo.toml"),
                                 format!("{it}/**/Cargo.lock"),
+                                // FIXME @alibektas : WS may not have to be local for RATOML to be included.
+                                format!("{it}/**/.rust-analyzer.toml"),
                             ]
                         })
                     })
