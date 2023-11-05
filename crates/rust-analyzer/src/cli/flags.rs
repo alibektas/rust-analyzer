@@ -164,6 +164,7 @@ pub enum RustAnalyzerCmd {
     Search(Search),
     Lsif(Lsif),
     Scip(Scip),
+    Oguz(Oguz),
 }
 
 #[derive(Debug)]
@@ -235,6 +236,12 @@ pub struct Search {
 #[derive(Debug)]
 pub struct Lsif {
     pub path: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct Oguz {
+    pub path: PathBuf,
+    pub file_path: PathBuf,
 }
 
 #[derive(Debug)]

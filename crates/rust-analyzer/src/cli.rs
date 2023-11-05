@@ -10,6 +10,7 @@ mod ssr;
 mod lsif;
 mod scip;
 mod run_tests;
+mod oguz;
 
 mod progress_report;
 

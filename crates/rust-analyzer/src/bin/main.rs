@@ -83,6 +83,7 @@ fn main() -> anyhow::Result<()> {
         flags::RustAnalyzerCmd::Lsif(cmd) => cmd.run()?,
         flags::RustAnalyzerCmd::Scip(cmd) => cmd.run()?,
         flags::RustAnalyzerCmd::RunTests(cmd) => cmd.run()?,
+        flags::RustAnalyzerCmd::Oguz(cmd) => cmd.run()?,
     }
     Ok(())
 }
