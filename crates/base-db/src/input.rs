@@ -375,8 +375,14 @@ impl CrateData {
             }
         }
 
-        if self.env != other.env {
-            return false;
+        for (key, value) in &self.env.entries {
+            if key.as_str() == "OUT_DIR" {
+                continue;
+            }
+
+            if &other.env.entries[key] != value {
+                return false;
+            }
         }
 
         let slf_deps = self.dependencies.iter();
@@ -660,6 +666,7 @@ impl CrateGraph {
     pub fn extend(&mut self, mut other: CrateGraph, proc_macros: &mut ProcMacroPaths) {
         let topo = other.crates_in_topological_order();
         let mut id_map: FxHashMap<CrateId, CrateId> = FxHashMap::default();
+
         for topo in topo {
             let crate_data = &mut other.arena[topo];
 

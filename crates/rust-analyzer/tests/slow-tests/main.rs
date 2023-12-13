@@ -1157,3 +1157,198 @@ version = "0.0.0"
 
     server.request::<WorkspaceSymbolRequest>(Default::default(), json!([]));
 }
+
+#[test]
+fn test_renaming_local_libs() {
+    if skip_slow_tests() {
+        return;
+    }
+
+    let test_dir = TestDir::new();
+    let test_path = test_dir.path().to_owned();
+    let path = test_path.to_str().unwrap();
+
+    let server = Project::with_fixture(
+        r#"
+//- /example1/example1-macros/Cargo.toml
+[package]
+name = "example1-macros"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0.39", features = ["full", "fold"] }
+quote = "1.0.33"
+proc-macro2 = "1.0.70"
+
+//- /example1/example1-macros/src/lib.rs
+use proc_macro::TokenStream;
+use quote::*;
+use syn::*;
+
+#[proc_macro_derive(Trait)]
+pub fn derive_trait(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let input_ident = input.ident;
+
+    TokenStream::from(quote!(
+        impl Trait for #input_ident {
+            #[inline(always)]
+            fn some_method(&self) -> usize {
+                0
+            }
+        }
+    ))
+}
+
+
+//- /example1/example1-macros/tests/attribute_macro.rs
+// use example2_macros::*;
+
+// // macro converts struct S to struct H
+// #[my_custom_attribute]
+// struct S {}
+
+// #[test]
+// fn test_my_custom_attribute() {
+//     // due to macro we have struct H in scope
+//     let _demo = H {};
+// }
+
+// #[test]
+// #[trace_var(_a)]
+// fn test_trace_var() {
+//     let mut _a = 9;
+//     _a = 6;
+//     _a += 3;
+//     _a = 0;
+// }
+
+
+//- /example1/example1/Cargo.toml
+[package]
+name = "example1"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+example1-macros = { path = "../example1-macros" }
+# bitvec = "1.0.1"
+
+
+//- /example1/example1/src/lib.rs
+fn hello() {
+    println!("Hi!")
+}
+
+//- /example2/example2-macros/Cargo.toml
+[package]
+name = "example2-macros"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0.39", features = ["full", "fold"] }
+quote = "1.0.33"
+proc-macro2 = "1.0.70"
+
+//- /example2/example2-macros/src/lib.rs
+use proc_macro::TokenStream;
+use quote::*;
+use syn::*;
+
+#[proc_macro_derive(Trait)]
+pub fn derive_trait(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let input_ident = input.ident;
+
+    TokenStream::from(quote!(
+        impl Trait for #input_ident {
+            #[inline(always)]
+            fn some_method(&self) -> usize {
+                0
+            }
+        }
+    ))
+}
+
+
+//- /example2/example2-macros/tests/attribute_macro.rs
+// use example2_macros::*;
+
+// // macro converts struct S to struct H
+// #[my_custom_attribute]
+// struct S {}
+
+// #[test]
+// fn test_my_custom_attribute() {
+//     // due to macro we have struct H in scope
+//     let _demo = H {};
+// }
+
+// #[test]
+// #[trace_var(_a)]
+// fn test_trace_var() {
+//     let mut _a = 9;
+//     _a = 6;
+//     _a += 3;
+//     _a = 0;
+// }
+
+
+//- /example2/example2/Cargo.toml
+[package]
+name = "example2"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+example2-macros = { path = "../example2-macros" }
+
+
+//- /example2/example2/src/lib.rs
+fn hello() {
+    println!("Hi!")
+}
+"#,
+    )
+    .with_config(json!({
+        "linkedProjects" : [
+            format!("{path}/example1/example1/Cargo.toml"),
+            format!("{path}/example1/example1-macros/Cargo.toml"),
+            format!("{path}/example2/example2/Cargo.toml"),
+            format!("{path}/example2/example2-macros/Cargo.toml"),
+        ]
+    }))
+    .tmp_dir(test_dir)
+    .server()
+    .wait_until_workspace_is_loaded();
+
+    let doc_id = server.doc_id(format!("{path}/example2/example2-macros/src/lib.rs").as_str());
+
+    server.request::<lsp_types::request::Rename>(
+        lsp_types::RenameParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: doc_id,
+                position: Position { line: 7, character: 15 },
+            },
+            new_name: "abc".to_string(),
+            work_done_progress_params: WorkDoneProgressParams { work_done_token: None },
+        },
+        json!({}),
+    );
+}
