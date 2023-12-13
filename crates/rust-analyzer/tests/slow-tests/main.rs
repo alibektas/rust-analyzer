@@ -1165,6 +1165,9 @@ fn test_renaming_local_libs() {
         return;
     }
 
+    let test_dir = TestDir::new();
+    let path = test_dir.path().to_str().unwrap();
+
     let server = Project::with_fixture(
         r#"
 //- /example1/example1-macros/Cargo.toml
@@ -1325,12 +1328,13 @@ fn hello() {
     )
     .with_config(json!({
         "linkedProjects" : [
-            "/example1/example1/Cargo.toml",
-            "/example1/example1-macros/Cargo.toml",
-            "/example2/example2/Cargo.toml",
-            "/example2/example2-macros/Cargo.toml",
+            format!("{path}/example1/example1/Cargo.toml"),
+            format!("{path}/example1/example1-macros/Cargo.toml"),
+            format!("{path}/example2/example2/Cargo.toml"),
+            format!("{path}/example2/example2-macros/Cargo.toml"),
         ]
     }))
+    .tmp_dir(test_dir)
     .server()
     .wait_until_workspace_is_loaded();
 
