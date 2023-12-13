@@ -1416,7 +1416,7 @@ fn handle_hack_cargo_workspace(
     crate_graph: &mut CrateGraph,
     sysroot: &Sysroot,
 ) -> FxHashMap<SysrootCrate, CrateId> {
-    let (cg, mut pm) = cargo_to_crate_graph(
+    let (mut cg, mut pm) = cargo_to_crate_graph(
         load,
         None,
         cargo,
@@ -1428,6 +1428,7 @@ fn handle_hack_cargo_workspace(
         target_layout,
         channel,
     );
+    cg.sort_deps();
     crate_graph.extend(cg, &mut pm);
     for crate_name in ["std", "alloc", "core"] {
         let original = crate_graph

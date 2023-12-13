@@ -6,7 +6,7 @@
 //! actual IO. See `vfs` and `project_model` in the `rust-analyzer` crate for how
 //! actual IO is done and lowered to input.
 
-use std::{fmt, mem, ops, panic::RefUnwindSafe, str::FromStr, sync};
+use std::{fmt, fs::OpenOptions, mem, ops, panic::RefUnwindSafe, str::FromStr, sync};
 
 use cfg::CfgOptions;
 use la_arena::{Arena, Idx};
@@ -339,7 +339,12 @@ pub struct CrateData {
 
 impl CrateData {
     /// Check if [`other`] is almost equal to [`self`] ignoring `CrateOrigin` value.
-    pub fn eq_ignoring_origin_and_deps(&self, other: &CrateData, ignore_dev_deps: bool) -> bool {
+    pub fn eq_ignoring_origin_and_deps(
+        &self,
+        other: &CrateData,
+        ignore_dev_deps: bool,
+        dbg_mode: bool,
+    ) -> bool {
         // This method has some obscure bits. These are mostly there to be compliant with
         // some patches. References to the patches are given.
         if self.root_file_id != other.root_file_id {
@@ -383,10 +388,23 @@ impl CrateData {
         let other_deps = other.dependencies.iter();
 
         if ignore_dev_deps {
+            if dbg_mode {
+                if !slf_deps.clone().eq(other_deps.clone()) {
+                    dbg!(&slf_deps);
+                    dbg!(&other_deps);
+                }
+            }
             return slf_deps
                 .clone()
                 .filter(|it| it.kind != DependencyKind::Dev)
                 .eq(other_deps.clone().filter(|it| it.kind != DependencyKind::Dev));
+        }
+
+        if dbg_mode {
+            if !slf_deps.clone().eq(other_deps.clone()) {
+                dbg!(&slf_deps);
+                dbg!(&other_deps);
+            }
         }
 
         slf_deps.eq(other_deps)
@@ -660,51 +678,121 @@ impl CrateGraph {
     pub fn extend(&mut self, mut other: CrateGraph, proc_macros: &mut ProcMacroPaths) {
         let topo = other.crates_in_topological_order();
         let mut id_map: FxHashMap<CrateId, CrateId> = FxHashMap::default();
+
         for topo in topo {
             let crate_data = &mut other.arena[topo];
 
             crate_data.dependencies.iter_mut().for_each(|dep| dep.crate_id = id_map[&dep.crate_id]);
             crate_data.dependencies.sort_by_key(|dep| dep.crate_id);
             let res = self.arena.iter().find_map(|(id, data)| {
+                let name_a = data.display_name.as_ref().unwrap().crate_name().as_smol_str();
+                let name_b = crate_data.display_name.as_ref().unwrap().crate_name().as_smol_str();
+                let mut mode = false;
+                if name_a == name_b && name_a == "example2_macros" {
+                    mode = true;
+                }
+
                 match (&data.origin, &crate_data.origin) {
                     (a, b) if a == b => {
-                        if data.eq_ignoring_origin_and_deps(&crate_data, false) {
+                        if mode {
+                            dbg!("A");
+                        }
+                        if data.eq_ignoring_origin_and_deps(&crate_data, false, false) {
                             return Some((id, false));
+                        }
+                        if mode {
+                            eprintln!("HOP");
+                            data.eq_ignoring_origin_and_deps(&crate_data, false, true);
                         }
                     }
                     (a @ CrateOrigin::Local { .. }, CrateOrigin::Library { .. })
                     | (a @ CrateOrigin::Library { .. }, CrateOrigin::Local { .. }) => {
+                        if mode {
+                            dbg!("B");
+                        }
                         // If the origins differ, check if the two crates are equal without
                         // considering the dev dependencies, if they are, they most likely are in
                         // different loaded workspaces which may cause issues. We keep the local
                         // version and discard the library one as the local version may have
                         // dev-dependencies that we want to keep resolving. See #15656 for more
                         // information.
-                        if data.eq_ignoring_origin_and_deps(&crate_data, true) {
+                        if data.eq_ignoring_origin_and_deps(&crate_data, true, false) {
                             return Some((id, if a.is_local() { false } else { true }));
                         }
+
+                        if mode {
+                            eprintln!("HEY");
+                            data.eq_ignoring_origin_and_deps(&crate_data, true, true);
+                        }
                     }
-                    (_, _) => return None,
+                    (_, _) => {
+                        if mode {
+                            dbg!("C");
+                        }
+                        return None;
+                    }
                 }
 
                 None
             });
 
             if let Some((res, should_update_lib_to_local)) = res {
+                let cr = &self.arena[res];
+                let mut dbgmode = false;
+                if cr.display_name.as_ref().unwrap().canonical_name == "example2-macros" {
+                    dbgmode = true;
+                    eprintln!("Burasi");
+                }
+
                 id_map.insert(topo, res);
                 if should_update_lib_to_local {
+                    eprintln!("Should update lib to local");
                     assert!(self.arena[res].origin.is_lib());
                     assert!(crate_data.origin.is_local());
                     self.arena[res].origin = crate_data.origin.clone();
 
                     // Move local's dev dependencies into the newly-local-formerly-lib crate.
                     self.arena[res].dependencies = crate_data.dependencies.clone();
+
+                    // dbg!(&self.arena[res]);
                 }
             } else {
                 let id = self.arena.alloc(crate_data.clone());
                 id_map.insert(topo, id);
             }
         }
+
+        eprintln!(
+            "example1-macros len {}",
+            self.crates_in_topological_order()
+                .into_iter()
+                .filter(|idx| {
+                    let crt = &self.arena[*idx];
+                    if crt.display_name.as_ref().unwrap().canonical_name == "example1-macros" {
+                        return true;
+                    }
+
+                    false
+                })
+                .collect::<Vec<_>>()
+                .len()
+        );
+
+        eprintln!(
+            "example2-macros len {}",
+            self.crates_in_topological_order()
+                .into_iter()
+                .filter(|idx| {
+                    let crt = &self.arena[*idx];
+                    if crt.display_name.as_ref().unwrap().canonical_name == "example2-macros" {
+                        return true;
+                    }
+
+                    false
+                })
+                .collect::<Vec<_>>()
+                .len()
+        );
 
         *proc_macros =
             mem::take(proc_macros).into_iter().map(|(id, macros)| (id_map[&id], macros)).collect();

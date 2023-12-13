@@ -301,3 +301,38 @@ fn test_deduplicate_origin_dev_rev() {
     let p2 = crates_named_p2[0];
     assert!(p2.origin.is_local());
 }
+
+#[test]
+fn test_deduplicate_proc_macro_crate() {
+    let path_map = &mut Default::default();
+    let (mut crate_graph_1, _proc_macros_1) = load_cargo_with_sysroot(
+        path_map,
+        "./crate_graph_deduplication/proc_macro_dedup/crate_1.json",
+    );
+    crate_graph_1.sort_deps();
+
+    let (mut crate_graph_2, mut _proc_macros_2) = load_cargo_with_sysroot(
+        path_map,
+        "./crate_graph_deduplication/proc_macro_dedup/crate_1_proc.json",
+    );
+    crate_graph_2.sort_deps();
+
+    let (mut crate_graph_3, mut _proc_macros_3) = load_cargo_with_sysroot(
+        path_map,
+        "./crate_graph_deduplication/proc_macro_dedup/crate_2.json",
+    );
+    crate_graph_3.sort_deps();
+
+    let (mut crate_graph_4, mut _proc_macros_4) = load_cargo_with_sysroot(
+        path_map,
+        "./crate_graph_deduplication/proc_macro_dedup/crate_2_proc.json",
+    );
+    crate_graph_4.sort_deps();
+
+    eprintln!("extend CG2");
+    crate_graph_1.extend(crate_graph_2, &mut _proc_macros_2);
+    eprintln!("extend CG3");
+    crate_graph_1.extend(crate_graph_3, &mut _proc_macros_3);
+    eprintln!("extend CG4");
+    crate_graph_1.extend(crate_graph_4, &mut _proc_macros_4);
+}
