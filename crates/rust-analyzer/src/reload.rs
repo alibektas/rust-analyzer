@@ -501,9 +501,8 @@ impl GlobalState {
             let mut crate_graph = CrateGraph::default();
             let mut proc_macros = Vec::default();
             for ws in &**self.workspaces {
-                let (mut other, mut crate_proc_macros) =
+                let (other, mut crate_proc_macros) =
                     ws.to_crate_graph(&mut load, &self.config.extra_env());
-                other.sort_deps();
                 crate_graph.extend(other, &mut crate_proc_macros);
                 proc_macros.push(crate_proc_macros);
             }

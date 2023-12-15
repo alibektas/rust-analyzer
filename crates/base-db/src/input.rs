@@ -380,8 +380,14 @@ impl CrateData {
             }
         }
 
-        if self.env != other.env {
-            return false;
+        for (key, value) in &self.env.entries {
+            if key.as_str() == "OUT_DIR" {
+                continue;
+            }
+
+            if &other.env.entries[key] != value {
+                return false;
+            }
         }
 
         let slf_deps = self.dependencies.iter();
@@ -688,7 +694,7 @@ impl CrateGraph {
                 let name_a = data.display_name.as_ref().unwrap().crate_name().as_smol_str();
                 let name_b = crate_data.display_name.as_ref().unwrap().crate_name().as_smol_str();
                 let mut mode = false;
-                if name_a == name_b && name_a == "example2_macros" {
+                if name_a == name_b && name_a == "proc_macro2" {
                     mode = true;
                 }
 

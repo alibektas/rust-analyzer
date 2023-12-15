@@ -32,7 +32,6 @@ use lsp_types::{
 use rust_analyzer::lsp::ext::{OnEnter, Runnables, RunnablesParams};
 use serde_json::json;
 use test_utils::skip_slow_tests;
-use xshell::TempDir;
 
 use crate::{
     support::{project, Project},
@@ -1166,7 +1165,8 @@ fn test_renaming_local_libs() {
     }
 
     let test_dir = TestDir::new();
-    let path = test_dir.path().to_str().unwrap();
+    let test_path = test_dir.path().to_owned();
+    let path = test_path.to_str().unwrap();
 
     let server = Project::with_fixture(
         r#"
@@ -1338,7 +1338,7 @@ fn hello() {
     .server()
     .wait_until_workspace_is_loaded();
 
-    let doc_id = server.doc_id("/example2/example2-macros/src/lib.rs");
+    let doc_id = server.doc_id(format!("{path}/example2/example2-macros/src/lib.rs").as_str());
     dbg!(&doc_id);
     eprintln!("HEY");
 
@@ -1346,7 +1346,7 @@ fn hello() {
         lsp_types::RenameParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: doc_id,
-                position: Position { line: 8, character: 15 },
+                position: Position { line: 7, character: 15 },
             },
             new_name: "abc".to_string(),
             work_done_progress_params: WorkDoneProgressParams { work_done_token: None },
