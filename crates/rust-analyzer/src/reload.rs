@@ -77,9 +77,9 @@ impl GlobalState {
         if self.config.lru_parse_query_capacity() != old_config.lru_parse_query_capacity() {
             self.analysis_host.update_lru_capacity(self.config.lru_parse_query_capacity());
         }
-        if self.config.lru_query_capacities() != old_config.lru_query_capacities() {
+        if self.config.lru_query_capacities_config() != old_config.lru_query_capacities_config() {
             self.analysis_host.update_lru_capacities(
-                &self.config.lru_query_capacities().cloned().unwrap_or_default(),
+                &self.config.lru_query_capacities_config().cloned().unwrap_or_default(),
             );
         }
         if self.config.linked_or_discovered_projects() != old_config.linked_or_discovered_projects()
@@ -443,8 +443,6 @@ impl GlobalState {
                                 format!("{it}/**/*.rs"),
                                 format!("{it}/**/Cargo.toml"),
                                 format!("{it}/**/Cargo.lock"),
-                                // FIXME @alibektas : WS may not have to be local for RATOML to be included.
-                                format!("{it}/**/.rust-analyzer.toml"),
                             ]
                         })
                     })
