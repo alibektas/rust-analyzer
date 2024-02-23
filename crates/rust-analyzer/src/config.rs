@@ -1991,7 +1991,7 @@ struct SnippetDef {
 mod single_or_array {
     use serde::{Deserialize, Serialize};
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -2022,7 +2022,7 @@ mod single_or_array {
         deserializer.deserialize_any(SingleOrVec)
     }
 
-    pub fn serialize<S>(vec: &Vec<String>, serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn serialize<S>(vec: &Vec<String>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
