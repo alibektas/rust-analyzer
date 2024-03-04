@@ -11,7 +11,6 @@ use std::{fmt, mem, ops, str::FromStr};
 use cfg::CfgOptions;
 use la_arena::{Arena, Idx, RawIdx};
 use rustc_hash::{FxHashMap, FxHashSet};
-use serde::Serialize;
 use syntax::SmolStr;
 use triomphe::Arc;
 use vfs::{file_set::FileSet, AbsPathBuf, AnchoredPath, FileId, VfsPath};
@@ -101,15 +100,6 @@ pub type CrateId = Idx<CrateData>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CrateName(SmolStr);
-
-impl Serialize for CrateName {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self)
-    }
-}
 
 impl CrateName {
     /// Creates a crate name, checking for dashes in the string provided.
