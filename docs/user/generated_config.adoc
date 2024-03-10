@@ -304,7 +304,7 @@ Maximum number of completions to return. If `None`, the limit is infinite.
 --
 Whether to show postfix snippets like `dbg`, `if`, `not`, etc.
 --
-[[rust-analyzer.completion.privateEditable.enable]]rust-analyzer.completion.privateEditable.enable (default: `false`)::
+[[rust-analyzer.completion.privateEditable.enable]]rust-analyzer.completion.privateEditable.enable (default: `true`)::
 +
 --
 Enables completions of private items and fields that are defined in the current workspace even if they are not visible at the current position.

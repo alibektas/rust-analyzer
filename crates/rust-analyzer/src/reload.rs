@@ -28,11 +28,12 @@ use proc_macro_api::ProcMacroServer;
 use project_model::{ProjectWorkspace, WorkspaceBuildScripts};
 use rustc_hash::FxHashSet;
 use stdx::{format_to, thread::ThreadIntent};
+use tracing::error;
 use triomphe::Arc;
 use vfs::{AbsPath, AbsPathBuf, ChangeKind};
 
 use crate::{
-    config::{Config, FilesWatcher, LinkedProject},
+    config::{Config, ConfigChange, ConfigError, FilesWatcher, LinkedProject},
     global_state::GlobalState,
     lsp_ext,
     main_loop::Task,
@@ -443,9 +444,12 @@ impl GlobalState {
                                 format!("{it}/**/*.rs"),
                                 format!("{it}/**/Cargo.toml"),
                                 format!("{it}/**/Cargo.lock"),
+                                format!("{it}/**/rust-analyzer.toml"),
                             ]
                         })
                     })
+                    .chain(iter::once(self.config.user_config_path().to_string()))
+                    .chain(iter::once(self.config.root_ratoml_path().to_string()))
                     .map(|glob_pattern| lsp_types::FileSystemWatcher {
                         glob_pattern: lsp_types::GlobPattern::String(glob_pattern),
                         kind: None,
@@ -515,7 +519,41 @@ impl GlobalState {
             version: self.vfs_config_version,
         });
         self.source_root_config = project_folders.source_root_config;
-        self.local_roots_parent_map = self.source_root_config.source_root_parent_map();
+        self.local_roots_parent_map = Arc::new(self.source_root_config.source_root_parent_map());
+
+        let user_config_path = self.config.user_config_path();
+        let root_ratoml_path = self.config.root_ratoml_path();
+
+        {
+            let vfs = &mut self.vfs.write().0;
+            let loader = &mut self.loader;
+
+            if vfs.file_id(&user_config_path).is_none() {
+                if let Some(user_cfg_abs) = user_config_path.as_path() {
+                    let contents = loader.handle.load_sync(user_cfg_abs);
+                    vfs.set_file_contents(user_config_path.clone(), contents);
+                } else {
+                    error!("Non-abs virtual path for user config.");
+                }
+            }
+
+            if vfs.file_id(&root_ratoml_path).is_none() {
+                // FIXME @alibektas : Sometimes root_path_ratoml collide with a regular ratoml.
+                // Although this shouldn't be a problem because everyting is mapped to a `FileId`.
+                // We may want to further think about this.
+                if let Some(root_ratoml_abs) = root_ratoml_path.as_path() {
+                    let contents = loader.handle.load_sync(root_ratoml_abs);
+                    vfs.set_file_contents(root_ratoml_path.clone(), contents);
+                } else {
+                    error!("Non-abs virtual path for user config.");
+                }
+            }
+        }
+
+        let mut config_change = ConfigChange::default();
+        config_change.change_source_root_parent_map(self.local_roots_parent_map.clone());
+        let mut error_sink = ConfigError::default();
+        self.config = Arc::new(self.config.apply_change(config_change, &mut error_sink));
 
         self.recreate_crate_graph(cause);
 

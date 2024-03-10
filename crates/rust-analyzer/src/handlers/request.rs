@@ -36,7 +36,7 @@ use vfs::{AbsPath, AbsPathBuf, FileId, VfsPath};
 
 use crate::{
     cargo_target_spec::CargoTargetSpec,
-    config::{Config, RustfmtConfig, WorkspaceSymbolConfig},
+    config::{Config, ConfigNodeKey, ConfigNodeValue, RustfmtConfig, WorkspaceSymbolConfig},
     diff::diff,
     global_state::{GlobalState, GlobalStateSnapshot},
     hack_recover_crate_name,
@@ -191,6 +191,52 @@ pub(crate) fn handle_view_item_tree(
     let file_id = from_proto::file_id(&snap, &params.text_document.uri)?;
     let res = snap.analysis.view_item_tree(file_id)?;
     Ok(res)
+}
+
+pub(crate) fn handle_debug_config_tree(
+    snap: GlobalStateSnapshot,
+    params: lsp_ext::DebugConfigTreeParams,
+) -> anyhow::Result<String> {
+    let _p = tracing::span!(tracing::Level::INFO, "handle_debug_config_tree").entered();
+    if let Some(text_document) = params.text_document {
+        let file_id = from_proto::file_id(&snap, &text_document.uri)?;
+        let source_root_id = snap.analysis.source_root_id(file_id)?;
+        let _url = snap.file_id_to_url(file_id);
+        let traversed = snap
+            .config
+            .traverse(ConfigNodeKey::Ratoml(source_root_id))
+            .map(|(node_key, node_value)| match node_value {
+                ConfigNodeValue::Ratoml(node) => {
+                    json!({
+                        "node" : node_key,
+                        "uri" : snap.file_id_to_url(node.file_id()),
+                        "config": node_value
+                    })
+                }
+                ConfigNodeValue::Client(_) => {
+                    json!({
+                        "node" : node_key,
+                        "uri" : "$$Client$$",
+                        "config" : node_value
+                    })
+                }
+            })
+            .collect::<Vec<_>>();
+        return Ok(serde_json::to_string_pretty(&traversed).unwrap());
+    }
+
+    let traversed = snap
+        .config
+        .traverse(ConfigNodeKey::Client)
+        .map(|(node_key, node_value)| match node_value {
+            ConfigNodeValue::Ratoml(node) => {
+                json!({"node" : node_key, "uri" : snap.file_id_to_url(node.file_id()), "config": node_value})
+            }
+            ConfigNodeValue::Client(_) => json!({"node" : node_key, "uri" : "$$Client$$", "config" : node_value}),
+        })
+        .collect::<Vec<_>>();
+
+    return Ok(serde_json::to_string_pretty(&traversed).unwrap());
 }
 
 pub(crate) fn handle_run_test(
@@ -352,7 +398,7 @@ pub(crate) fn handle_join_lines(
     let _p = tracing::span!(tracing::Level::INFO, "handle_join_lines").entered();
 
     let file_id = from_proto::file_id(&snap, &params.text_document.uri)?;
-    let source_root = snap.analysis.source_root(file_id)?;
+    let source_root = snap.analysis.source_root_id(file_id)?;
     let config = snap.config.join_lines(Some(source_root));
     let line_index = snap.file_line_index(file_id)?;
 
@@ -920,7 +966,7 @@ pub(crate) fn handle_completion(
     let completion_trigger_character =
         params.context.and_then(|ctx| ctx.trigger_character).and_then(|s| s.chars().next());
 
-    let source_root = snap.analysis.source_root(position.file_id)?;
+    let source_root = snap.analysis.source_root_id(position.file_id)?;
     let completion_config = &snap.config.completion(Some(source_root));
     let items = match snap.analysis.completions(
         completion_config,
@@ -962,7 +1008,7 @@ pub(crate) fn handle_completion_resolve(
     let file_id = from_proto::file_id(&snap, &resolve_data.position.text_document.uri)?;
     let line_index = snap.file_line_index(file_id)?;
     let offset = from_proto::offset(&line_index, resolve_data.position.position)?;
-    let source_root = snap.analysis.source_root(file_id)?;
+    let source_root = snap.analysis.source_root_id(file_id)?;
 
     let additional_edits = snap
         .analysis
@@ -1194,7 +1240,7 @@ pub(crate) fn handle_code_action(
     let file_id = from_proto::file_id(&snap, &params.text_document.uri)?;
     let line_index = snap.file_line_index(file_id)?;
     let frange = from_proto::file_range(&snap, &params.text_document, params.range)?;
-    let source_root = snap.analysis.source_root(file_id)?;
+    let source_root = snap.analysis.source_root_id(file_id)?;
 
     let mut assists_config = snap.config.assist(Some(source_root));
     assists_config.allowed = params
@@ -1267,7 +1313,7 @@ pub(crate) fn handle_code_action_resolve(
     let line_index = snap.file_line_index(file_id)?;
     let range = from_proto::text_range(&line_index, params.code_action_params.range)?;
     let frange = FileRange { file_id, range };
-    let source_root = snap.analysis.source_root(file_id)?;
+    let source_root = snap.analysis.source_root_id(file_id)?;
 
     let mut assists_config = snap.config.assist(Some(source_root));
     assists_config.allowed = params
@@ -1421,7 +1467,7 @@ pub(crate) fn handle_document_highlight(
     let _p = tracing::span!(tracing::Level::INFO, "handle_document_highlight").entered();
     let position = from_proto::file_position(&snap, params.text_document_position_params)?;
     let line_index = snap.file_line_index(position.file_id)?;
-    let source_root = snap.analysis.source_root(position.file_id)?;
+    let source_root = snap.analysis.source_root_id(position.file_id)?;
 
     let refs = match snap
         .analysis
@@ -1472,7 +1518,7 @@ pub(crate) fn handle_inlay_hints(
         params.range,
     )?;
     let line_index = snap.file_line_index(file_id)?;
-    let source_root = snap.analysis.source_root(file_id)?;
+    let source_root = snap.analysis.source_root_id(file_id)?;
 
     let inlay_hints_config = snap.config.inlay_hints(Some(source_root));
     Ok(Some(
@@ -1509,7 +1555,7 @@ pub(crate) fn handle_inlay_hints_resolve(
 
     let line_index = snap.file_line_index(file_id)?;
     let hint_position = from_proto::offset(&line_index, original_hint.position)?;
-    let source_root = snap.analysis.source_root(file_id)?;
+    let source_root = snap.analysis.source_root_id(file_id)?;
 
     let mut forced_resolve_inlay_hints_config = snap.config.inlay_hints(Some(source_root));
     forced_resolve_inlay_hints_config.fields_to_resolve = InlayFieldsToResolve::empty();
@@ -1642,7 +1688,7 @@ pub(crate) fn handle_semantic_tokens_full(
     let file_id = from_proto::file_id(&snap, &params.text_document.uri)?;
     let text = snap.analysis.file_text(file_id)?;
     let line_index = snap.file_line_index(file_id)?;
-    let source_root = snap.analysis.source_root(file_id)?;
+    let source_root = snap.analysis.source_root_id(file_id)?;
 
     let mut highlight_config = snap.config.highlighting_config(Some(source_root));
     // Avoid flashing a bunch of unresolved references when the proc-macro servers haven't been spawned yet.
@@ -1673,7 +1719,7 @@ pub(crate) fn handle_semantic_tokens_full_delta(
     let file_id = from_proto::file_id(&snap, &params.text_document.uri)?;
     let text = snap.analysis.file_text(file_id)?;
     let line_index = snap.file_line_index(file_id)?;
-    let source_root = snap.analysis.source_root(file_id)?;
+    let source_root = snap.analysis.source_root_id(file_id)?;
 
     let mut highlight_config = snap.config.highlighting_config(Some(source_root));
     // Avoid flashing a bunch of unresolved references when the proc-macro servers haven't been spawned yet.
@@ -1717,7 +1763,7 @@ pub(crate) fn handle_semantic_tokens_range(
     let frange = from_proto::file_range(&snap, &params.text_document, params.range)?;
     let text = snap.analysis.file_text(frange.file_id)?;
     let line_index = snap.file_line_index(frange.file_id)?;
-    let source_root = snap.analysis.source_root(frange.file_id)?;
+    let source_root = snap.analysis.source_root_id(frange.file_id)?;
 
     let mut highlight_config = snap.config.highlighting_config(Some(source_root));
     // Avoid flashing a bunch of unresolved references when the proc-macro servers haven't been spawned yet.

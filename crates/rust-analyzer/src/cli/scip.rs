@@ -13,6 +13,7 @@ use scip::types as scip_types;
 
 use crate::{
     cli::flags,
+    config::{ConfigChange, ConfigError},
     line_index::{LineEndings, LineIndex, PositionEncoding},
 };
 
@@ -34,12 +35,17 @@ impl flags::Scip {
             lsp_types::ClientCapabilities::default(),
             /* workspace_roots = */ vec![],
             /* is_visual_studio_code = */ false,
+            None,
         );
 
         if let Some(p) = self.config_path {
             let mut file = std::io::BufReader::new(std::fs::File::open(p)?);
             let json = serde_json::from_reader(&mut file)?;
-            config.update(json)?;
+            let mut change = ConfigChange::default();
+            change.change_client_config(json);
+            let mut error_sink = ConfigError::default();
+            config = config.apply_change(change, &mut error_sink);
+            // FIXME @alibektas : What happens to errors?
         }
         let cargo_config = config.cargo();
         let (db, vfs, _) = load_workspace_at(

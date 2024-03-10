@@ -30,7 +30,7 @@ use crate::{
 };
 
 pub fn main_loop(config: Config, connection: Connection) -> anyhow::Result<()> {
-    tracing::info!("initial config: {:#?}", config);
+    // tracing::info!("initial config: {:#?}", config);
 
     // Windows scheduler implements priority boosts: if thread waits for an
     // event (like a condvar), and event fires, priority of the thread is
@@ -186,6 +186,11 @@ impl GlobalState {
                         scheme: None,
                         pattern: Some("**/Cargo.lock".into()),
                     },
+                    lsp_types::DocumentFilter {
+                        language: None,
+                        scheme: None,
+                        pattern: Some("**/rust-analyzer.toml".into()),
+                    },
                 ]),
             },
         };
@@ -236,10 +241,10 @@ impl GlobalState {
         let event_dbg_msg = format!("{event:?}");
         tracing::debug!(?loop_start, ?event, "handle_event");
         if tracing::enabled!(tracing::Level::INFO) {
-            let task_queue_len = self.task_pool.handle.len();
-            if task_queue_len > 0 {
-                tracing::info!("task queue len: {}", task_queue_len);
-            }
+            let _task_queue_len = self.task_pool.handle.len();
+            // if task_queue_len > 0 {
+            // tracing::info!("task queue len: {}", task_queue_len);
+            // }
         }
 
         let was_quiescent = self.is_quiescent();
@@ -957,6 +962,7 @@ impl GlobalState {
             .on::<lsp_ext::OpenCargoToml>(handlers::handle_open_cargo_toml)
             .on::<lsp_ext::MoveItem>(handlers::handle_move_item)
             .on::<lsp_ext::WorkspaceSymbol>(handlers::handle_workspace_symbol)
+            .on::<lsp_ext::DebugConfigTree>(handlers::handle_debug_config_tree)
             .on::<lsp_request::DocumentSymbolRequest>(handlers::handle_document_symbol)
             .on::<lsp_request::GotoDefinition>(handlers::handle_goto_definition)
             .on::<lsp_request::GotoDeclaration>(handlers::handle_goto_declaration)

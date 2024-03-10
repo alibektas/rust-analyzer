@@ -20,14 +20,18 @@ use parking_lot::{
 use proc_macro_api::ProcMacroServer;
 use project_model::{CargoWorkspace, ProjectWorkspace, Target, WorkspaceBuildScripts};
 use rustc_hash::{FxHashMap, FxHashSet};
+use tracing::{error, warn};
 use triomphe::Arc;
-use vfs::{AnchoredPathBuf, ChangedFile, Vfs};
+use vfs::{AnchoredPathBuf, ChangedFile, Vfs, VfsPath};
 
 use crate::{
-    config::{Config, ConfigError},
+    config::{Config, ConfigChange, ConfigError},
     diagnostics::{CheckFixes, DiagnosticCollection},
     line_index::{LineEndings, LineIndex},
-    lsp::{from_proto, to_proto::url_from_abs_path},
+    lsp::{
+        from_proto::{self},
+        to_proto::url_from_abs_path,
+    },
     lsp_ext,
     main_loop::Task,
     mem_docs::MemDocs,
@@ -53,7 +57,7 @@ type ReqQueue = lsp_server::ReqQueue<(String, Instant), ReqHandler>;
 ///
 /// Note that this struct has more than one impl in various modules!
 #[doc(alias = "GlobalMess")]
-pub(crate) struct GlobalState {
+pub struct GlobalState {
     sender: Sender<lsp_server::Message>,
     req_queue: ReqQueue,
 
@@ -67,7 +71,7 @@ pub(crate) struct GlobalState {
     pub(crate) mem_docs: MemDocs,
     pub(crate) source_root_config: SourceRootConfig,
     /// A mapping that maps a local source root's `SourceRootId` to it parent's `SourceRootId`, if it has one.
-    pub(crate) local_roots_parent_map: FxHashMap<SourceRootId, SourceRootId>,
+    pub(crate) local_roots_parent_map: Arc<FxHashMap<SourceRootId, SourceRootId>>,
     pub(crate) semantic_tokens_cache: Arc<Mutex<FxHashMap<Url, SemanticTokens>>>,
 
     // status
@@ -161,7 +165,15 @@ pub(crate) struct GlobalStateSnapshot {
 impl std::panic::UnwindSafe for GlobalStateSnapshot {}
 
 impl GlobalState {
-    pub(crate) fn new(sender: Sender<lsp_server::Message>, config: Config) -> GlobalState {
+    pub fn config(&self) -> Arc<Config> {
+        self.config.clone()
+    }
+
+    pub fn mem_docs(&self) -> &MemDocs {
+        &self.mem_docs
+    }
+
+    pub fn new(sender: Sender<lsp_server::Message>, config: Config) -> GlobalState {
         let loader = {
             let (sender, receiver) = unbounded::<vfs::loader::Message>();
             let handle: vfs_notify::NotifyHandle =
@@ -206,7 +218,7 @@ impl GlobalState {
             send_hint_refresh_query: false,
             last_reported_status: None,
             source_root_config: SourceRootConfig::default(),
-            local_roots_parent_map: FxHashMap::default(),
+            local_roots_parent_map: Arc::new(FxHashMap::default()),
             config_errors: Default::default(),
 
             proc_macro_clients: Arc::from_iter([]),
@@ -241,10 +253,30 @@ impl GlobalState {
         this
     }
 
-    pub(crate) fn process_changes(&mut self) -> bool {
+    pub fn process_changes(&mut self) -> bool {
         let _p = tracing::span!(tracing::Level::INFO, "GlobalState::process_changes").entered();
 
         let mut file_changes = FxHashMap::<_, (bool, ChangedFile)>::default();
+
+        // We cannot directly resolve a change in a ratoml file to a format
+        // that can be used by the config module because config talks
+        // in `SourceRootId`s instead of `FileId`s and `FileId` -> `SourceRootId`
+        // mapping is not ready until `AnalysisHost::apply_changes` has been called.
+        let mut modified_ratoml_files: FxHashMap<FileId, vfs::VfsPath> = FxHashMap::default();
+        let mut ratoml_text_map: FxHashMap<FileId, (vfs::VfsPath, Option<Arc<str>>)> =
+            FxHashMap::default();
+        let mut user_config_file_id: Option<FileId> = None;
+        let mut user_config_text: Option<Arc<str>> = None;
+
+        let mut root_path_ratoml: Option<FileId> = None;
+        let mut root_path_ratoml_text: Option<Arc<str>> = None;
+
+        let root_vfs_path = {
+            let mut root_vfs_path = self.config.root_path().to_path_buf();
+            root_vfs_path.push("rust-analyzer.toml");
+            VfsPath::new_real_path(root_vfs_path.to_string())
+        };
+
         let (change, modified_rust_files, workspace_structure_change) = {
             let mut change = ChangeWithProcMacros::new();
             let mut guard = self.vfs.write();
@@ -298,14 +330,26 @@ impl GlobalState {
                 })
                 .map(|(file_id, (_, change))| vfs::ChangedFile { file_id, ..change })
                 .collect();
-
             let mut workspace_structure_change = None;
             // A file was added or deleted
             let mut has_structure_changes = false;
             let mut bytes = vec![];
             let mut modified_rust_files = vec![];
+
             for file in changed_files {
                 let vfs_path = vfs.file_path(file.file_id);
+                if let Some(("rust-analyzer", Some("toml"))) = vfs_path.name_and_extension() {
+                    // Remember ids to use them after `apply_changes`
+                    modified_ratoml_files.insert(file.file_id, vfs_path.clone());
+                    if vfs_path == self.config.user_config_path() {
+                        user_config_file_id = Some(file.file_id);
+                    }
+
+                    if vfs_path == &root_vfs_path {
+                        root_path_ratoml = Some(file.file_id);
+                    }
+                }
+
                 if let Some(path) = vfs_path.as_path() {
                     let path = path.to_path_buf();
                     if reload::should_refresh_for_change(&path, file.kind()) {
@@ -325,26 +369,47 @@ impl GlobalState {
                     self.diagnostics.clear_native_for(file.file_id);
                 }
 
-                let text = if let vfs::Change::Create(v) | vfs::Change::Modify(v) = file.change {
-                    String::from_utf8(v).ok().map(|text| {
-                        // FIXME: Consider doing normalization in the `vfs` instead? That allows
-                        // getting rid of some locking
-                        let (text, line_endings) = LineEndings::normalize(text);
-                        (Arc::from(text), line_endings)
-                    })
-                } else {
-                    None
-                };
+                let text: Option<(Arc<str>, LineEndings)> =
+                    if let vfs::Change::Create(v) | vfs::Change::Modify(v) = file.change {
+                        String::from_utf8(v).ok().map(|text| {
+                            // FIXME: Consider doing normalization in the `vfs` instead? That allows
+                            // getting rid of some locking
+                            let (text, line_endings) = LineEndings::normalize(text);
+                            (Arc::from(text), line_endings)
+                        })
+                    } else {
+                        None
+                    };
                 // delay `line_endings_map` changes until we are done normalizing the text
                 // this allows delaying the re-acquisition of the write lock
                 bytes.push((file.file_id, text));
             }
             let (vfs, line_endings_map) = &mut *RwLockUpgradableReadGuard::upgrade(guard);
             bytes.into_iter().for_each(|(file_id, text)| match text {
-                None => change.change_file(file_id, None),
+                None => {
+                    change.change_file(file_id, None);
+                    if let Some(vfs_path) = modified_ratoml_files.get(&file_id) {
+                        if user_config_file_id == Some(file_id) {
+                            user_config_text = None;
+                        } else if root_path_ratoml == Some(file_id) {
+                            root_path_ratoml_text = None;
+                        } else {
+                            ratoml_text_map.insert(file_id, (vfs_path.clone(), None));
+                        }
+                    }
+                }
                 Some((text, line_endings)) => {
                     line_endings_map.insert(file_id, line_endings);
-                    change.change_file(file_id, Some(text));
+                    change.change_file(file_id, Some(text.clone()));
+                    if let Some(vfs_path) = modified_ratoml_files.get(&file_id) {
+                        if user_config_file_id == Some(file_id) {
+                            user_config_text = Some(text.clone());
+                        } else if root_path_ratoml == Some(file_id) {
+                            root_path_ratoml_text = Some(text.clone());
+                        } else {
+                            ratoml_text_map.insert(file_id, (vfs_path.clone(), Some(text.clone())));
+                        }
+                    }
                 }
             });
             if has_structure_changes {
@@ -355,6 +420,56 @@ impl GlobalState {
         };
 
         self.analysis_host.apply_change(change);
+
+        let config_change = {
+            let mut change = ConfigChange::default();
+            let inst = self.analysis_host.analysis();
+
+            for (file_id, (vfs_path, text)) in ratoml_text_map {
+                // If change has been made to a ratoml file that
+                // belongs to a non-local source root, we will ignore it.
+                // As it doesn't make sense a users to use external config files.
+                if let Ok(source_root) = inst.source_root_id(file_id) {
+                    if let Ok(true) = inst.is_local_source_root(source_root) {
+                        if let Some((old_file, old_path, old_text)) =
+                            change.change_ratoml(source_root, file_id, vfs_path.clone(), text)
+                        {
+                            // SourceRoot has more than 1 RATOML files. In this case lexicographically
+                            // smaller wins.
+                            // FIXME @alibektas : What about symlinks?
+                            if old_path < vfs_path {
+                                warn!("Two RATOML files are found inside the same crate. {old_path} is preferred over {vfs_path}. This means that the latter has no effect!");
+                                // Put the old one back in.
+                                change.change_ratoml(source_root, old_file, old_path, old_text);
+                            }
+                        }
+                    }
+                } else {
+                    // Mapping to a SourceRoot should always end up in `Ok`
+                    error!("Mapping to SourceRootId failed.");
+                }
+            }
+
+            if let Some(txt) = user_config_text {
+                change.change_user_config(Some((user_config_file_id.unwrap(), txt)));
+            }
+
+            if let Some(txt) = root_path_ratoml_text {
+                change.change_root_ratoml(Some((root_path_ratoml.unwrap(), txt)));
+            }
+
+            change
+        };
+
+        let mut error_sink = ConfigError::default();
+        let config = self.config.apply_change(config_change, &mut error_sink);
+
+        if config.should_update() {
+            self.update_configuration(config);
+        } else {
+            // No global or client level config was changed. So we can just naively replace config.
+            self.config = Arc::new(config);
+        }
 
         {
             if !matches!(&workspace_structure_change, Some((.., true))) {

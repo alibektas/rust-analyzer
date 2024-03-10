@@ -16,6 +16,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::line_index::PositionEncoding;
 
+pub enum DebugConfigTree {}
+
+impl Request for DebugConfigTree {
+    type Params = DebugConfigTreeParams;
+    type Result = String;
+    const METHOD: &'static str = "rust-analyzer/debugConfigTree";
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugConfigTreeParams {
+    pub text_document: Option<TextDocumentIdentifier>,
+}
+
 pub enum AnalyzerStatus {}
 
 impl Request for AnalyzerStatus {

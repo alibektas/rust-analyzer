@@ -1,19 +1,18 @@
 //! Config used by the language server.
 //!
-//! We currently get this config from `initialize` LSP request, which is not the
-//! best way to do it, but was the simplest thing we could implement.
-//!
 //! Of particular interest is the `feature_flags` hash map: while other fields
 //! configure the server itself, feature flags are passed into analysis, and
 //! tweak things like automatic insertion of `()` in completions.
 #![allow(dead_code)]
 use std::{
-    fmt, iter,
+    fmt,
+    iter::{self},
     ops::Not,
     path::{Path, PathBuf},
 };
 
 use cfg::{CfgAtom, CfgDiff};
+use dirs::config_dir;
 use flycheck::FlycheckConfig;
 use ide::{
     AssistConfig, CallableSnippets, CompletionConfig, DiagnosticsConfig, ExprFillDefaultMode,
@@ -32,9 +31,14 @@ use project_model::{
     CargoConfig, CargoFeatures, ProjectJson, ProjectJsonData, ProjectManifest, RustLibSource,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{
+    de::{DeserializeOwned, Error},
+    ser::SerializeStruct,
+    Deserialize, Serialize,
+};
 use stdx::format_to_acc;
-use vfs::{AbsPath, AbsPathBuf};
+use triomphe::Arc;
+use vfs::{AbsPath, AbsPathBuf, FileId, VfsPath};
 
 use crate::{
     caps::completion_item_edit_resolve,
@@ -70,12 +74,6 @@ config_data! {
     ///
     /// A config is searched for by traversing a "config tree" in a bottom up fashion. It is chosen by the nearest first principle.
     global: struct GlobalConfigData <- GlobalConfigInput  -> {
-        /// Whether to insert #[must_use] when generating `as_` methods
-        /// for enum variants.
-        assist_emitMustUse: bool               = false,
-        /// Placeholder expression to use for missing expressions in assists.
-        assist_expressionFillDefault: ExprFillDefaultDef              = ExprFillDefaultDef::Todo,
-
         /// Warm up caches on project load.
         cachePriming_enable: bool = true,
         /// How many worker threads to handle priming caches. The default `0` means to pick automatically.
@@ -246,6 +244,69 @@ config_data! {
         /// Whether `--workspace` should be passed to `cargo check`.
         /// If false, `-p <package>` will be passed instead.
         check_workspace: bool = true,
+
+
+        /// Toggles the additional completions that automatically add imports when completed.
+        /// Note that your client must specify the `additionalTextEdits` LSP client capability to truly have this feature enabled.
+        completion_autoimport_enable: bool       = true,
+        /// Toggles the additional completions that automatically show method calls and field accesses
+        /// with `self` prefixed to them when inside a method.
+        completion_autoself_enable: bool        = true,
+        /// Whether to add parenthesis and argument snippets when completing function.
+        completion_callable_snippets: CallableCompletionDef  = CallableCompletionDef::FillArguments,
+        /// Whether to show full function/method signatures in completion docs.
+        completion_fullFunctionSignatures_enable: bool = false,
+        /// Maximum number of completions to return. If `None`, the limit is infinite.
+        completion_limit: Option<usize> = None,
+        /// Whether to show postfix snippets like `dbg`, `if`, `not`, etc.
+        completion_postfix_enable: bool         = true,
+        /// Enables completions of private items and fields that are defined in the current workspace even if they are not visible at the current position.
+        completion_privateEditable_enable: bool = true,
+        /// Custom completion snippets.
+        // NOTE: we use IndexMap for deterministic serialization ordering
+        completion_snippets_custom: IndexMap<String, SnippetDef> = serde_json::from_str(r#"{
+            "Arc::new": {
+                "postfix": "arc",
+                "body": "Arc::new(${receiver})",
+                "requires": "std::sync::Arc",
+                "description": "Put the expression into an `Arc`",
+                "scope": "expr"
+            },
+            "Rc::new": {
+                "postfix": "rc",
+                "body": "Rc::new(${receiver})",
+                "requires": "std::rc::Rc",
+                "description": "Put the expression into an `Rc`",
+                "scope": "expr"
+            },
+            "Box::pin": {
+                "postfix": "pinbox",
+                "body": "Box::pin(${receiver})",
+                "requires": "std::boxed::Box",
+                "description": "Put the expression into a pinned `Box`",
+                "scope": "expr"
+            },
+            "Ok": {
+                "postfix": "ok",
+                "body": "Ok(${receiver})",
+                "description": "Wrap the expression in a `Result::Ok`",
+                "scope": "expr"
+            },
+            "Err": {
+                "postfix": "err",
+                "body": "Err(${receiver})",
+                "description": "Wrap the expression in a `Result::Err`",
+                "scope": "expr"
+            },
+            "Some": {
+                "postfix": "some",
+                "body": "Some(${receiver})",
+                "description": "Wrap the expression in an `Option::Some`",
+                "scope": "expr"
+            }
+        }"#).unwrap(),
+        /// Whether to enable term search based snippets like `Some(foo.bar().baz())`.
+        completion_termSearch_enable: bool = false,
 
         /// List of rust-analyzer diagnostics to disable.
         diagnostics_disabled: FxHashSet<String> = FxHashSet::default(),
@@ -437,67 +498,12 @@ config_data! {
     /// Local configurations can be overridden for every crate by placing a `rust-analyzer.toml` on crate root.
     /// A config is searched for by traversing a "config tree" in a bottom up fashion. It is chosen by the nearest first principle.
     local: struct LocalConfigData <- LocalConfigInput ->  {
-        /// Toggles the additional completions that automatically add imports when completed.
-        /// Note that your client must specify the `additionalTextEdits` LSP client capability to truly have this feature enabled.
-        completion_autoimport_enable: bool       = true,
-        /// Toggles the additional completions that automatically show method calls and field accesses
-        /// with `self` prefixed to them when inside a method.
-        completion_autoself_enable: bool        = true,
-        /// Whether to add parenthesis and argument snippets when completing function.
-        completion_callable_snippets: CallableCompletionDef  = CallableCompletionDef::FillArguments,
-        /// Whether to show full function/method signatures in completion docs.
-        completion_fullFunctionSignatures_enable: bool = false,
-        /// Maximum number of completions to return. If `None`, the limit is infinite.
-        completion_limit: Option<usize> = None,
-        /// Whether to show postfix snippets like `dbg`, `if`, `not`, etc.
-        completion_postfix_enable: bool         = true,
-        /// Enables completions of private items and fields that are defined in the current workspace even if they are not visible at the current position.
-        completion_privateEditable_enable: bool = false,
-        /// Custom completion snippets.
-        // NOTE: we use IndexMap for deterministic serialization ordering
-        completion_snippets_custom: IndexMap<String, SnippetDef> = serde_json::from_str(r#"{
-            "Arc::new": {
-                "postfix": "arc",
-                "body": "Arc::new(${receiver})",
-                "requires": "std::sync::Arc",
-                "description": "Put the expression into an `Arc`",
-                "scope": "expr"
-            },
-            "Rc::new": {
-                "postfix": "rc",
-                "body": "Rc::new(${receiver})",
-                "requires": "std::rc::Rc",
-                "description": "Put the expression into an `Rc`",
-                "scope": "expr"
-            },
-            "Box::pin": {
-                "postfix": "pinbox",
-                "body": "Box::pin(${receiver})",
-                "requires": "std::boxed::Box",
-                "description": "Put the expression into a pinned `Box`",
-                "scope": "expr"
-            },
-            "Ok": {
-                "postfix": "ok",
-                "body": "Ok(${receiver})",
-                "description": "Wrap the expression in a `Result::Ok`",
-                "scope": "expr"
-            },
-            "Err": {
-                "postfix": "err",
-                "body": "Err(${receiver})",
-                "description": "Wrap the expression in a `Result::Err`",
-                "scope": "expr"
-            },
-            "Some": {
-                "postfix": "some",
-                "body": "Some(${receiver})",
-                "description": "Wrap the expression in an `Option::Some`",
-                "scope": "expr"
-            }
-        }"#).unwrap(),
-        /// Whether to enable term search based snippets like `Some(foo.bar().baz())`.
-        completion_termSearch_enable: bool = false,
+        /// Whether to insert #[must_use] when generating `as_` methods
+        /// for enum variants.
+        assist_emitMustUse: bool               = false,
+        /// Placeholder expression to use for missing expressions in assists.
+        assist_expressionFillDefault: ExprFillDefaultDef              = ExprFillDefaultDef::Todo,
+
 
         /// Enables highlighting of related references while the cursor is on `break`, `loop`, `while`, or `for` keywords.
         highlightRelated_breakPoints_enable: bool = true,
@@ -637,20 +643,301 @@ pub struct Config {
     workspace_roots: Vec<AbsPathBuf>,
     caps: lsp_types::ClientCapabilities,
     root_path: AbsPathBuf,
-    detached_files: Vec<AbsPathBuf>,
     snippets: Vec<Snippet>,
     is_visual_studio_code: bool,
 
     default_config: ConfigData,
-    client_config: ConfigInput,
-    user_config: ConfigInput,
+    client_config: ClientConfig,
+    user_config: Option<RatomlNode>,
+
+    /// A special file for this session whose path is set to `self.root_path.join("rust-analyzer.toml")`
+    /// This file can be used to make global changes.
+    root_ratoml: Option<RatomlNode>,
+
+    /// For every `SourceRoot` there can be at most one RATOML file.
     ratoml_files: FxHashMap<SourceRootId, RatomlNode>,
+
+    /// Clone of the value that is stored inside a `GlobalState`.     
+    source_root_parent_map: Arc<FxHashMap<SourceRootId, SourceRootId>>,
+
+    /// Path to the root configuration file. This can be seen as a generic way to define what would be `$XDG_CONFIG_HOME/rust-analyzer/rust-analyzer.toml` in Linux.
+    /// If not specified by init of a `Config` object this value defaults to :
+    ///
+    /// |Platform | Value                                 | Example                                  |
+    /// | ------- | ------------------------------------- | ---------------------------------------- |
+    /// | Linux   | `$XDG_CONFIG_HOME` or `$HOME`/.config | /home/alice/.config                      |
+    /// | macOS   | `$HOME`/Library/Application Support   | /Users/Alice/Library/Application Support |
+    /// | Windows | `{FOLDERID_RoamingAppData}`           | C:\Users\Alice\AppData\Roaming           |
+    user_config_path: VfsPath,
+
+    root_ratoml_path: VfsPath,
+
+    /// Changes made to client and global configurations will partially not be reflected even after `.apply_change()` was called.
+    /// This field signals that the `GlobalState` should call its `update_configuration()` method.
+    should_update: bool,
 }
 
-#[derive(Clone, Debug)]
-struct RatomlNode {
-    node: ConfigInput,
-    parent: Option<SourceRootId>,
+#[derive(Debug, Clone, Default)]
+struct ClientConfig {
+    config: ConfigInput,
+    detached_files: Vec<AbsPathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RatomlNode {
+    file_id: FileId,
+    config: ConfigInput,
+}
+
+pub(crate) struct RootRatomlNode {
+    ratoml_node: RatomlNode,
+}
+
+impl RatomlNode {
+    pub(crate) fn file_id(&self) -> FileId {
+        self.file_id
+    }
+}
+
+impl Serialize for RatomlNode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut s = serializer.serialize_struct("RatomlNode", 2)?;
+        s.serialize_field("file_id", &self.file_id.index())?;
+        s.serialize_field("config", &self.config)?;
+        s.end()
+    }
+}
+
+#[derive(Debug, Hash, Eq, PartialEq)]
+pub(crate) enum ConfigNodeKey {
+    Ratoml(SourceRootId),
+    Client,
+    User,
+}
+
+impl Serialize for ConfigNodeKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            ConfigNodeKey::Ratoml(source_root_id) => serializer.serialize_u32(source_root_id.0),
+            ConfigNodeKey::Client => serializer.serialize_str("client"),
+            ConfigNodeKey::User => serializer.serialize_str("user"),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) enum ConfigNodeValue<'a> {
+    /// `rust-analyzer::config` module works by setting
+    /// a mapping between `SourceRootId` and `ConfigInput`.
+    /// Storing a `FileId` is mostly for debugging purposes.
+    Ratoml(&'a RatomlNode),
+    Client(&'a ConfigInput),
+}
+
+impl Config {
+    /// Walk towards the root starting from a specified `ConfigNode`
+    pub(crate) fn traverse(
+        &self,
+        start: ConfigNodeKey,
+    ) -> impl Iterator<Item = (ConfigNodeKey, ConfigNodeValue<'_>)> {
+        let mut v = vec![];
+
+        if let ConfigNodeKey::Ratoml(start) = start {
+            let mut par: Option<SourceRootId> = Some(start);
+            while let Some(source_root_id) = par {
+                par = self.source_root_parent_map.get(&start).copied();
+                if let Some(config) = self.ratoml_files.get(&source_root_id) {
+                    v.push((
+                        ConfigNodeKey::Ratoml(source_root_id),
+                        ConfigNodeValue::Ratoml(config),
+                    ));
+                }
+            }
+        }
+
+        v.push((ConfigNodeKey::Client, ConfigNodeValue::Client(&self.client_config.config)));
+
+        if let Some(user_config) = self.user_config.as_ref() {
+            v.push((ConfigNodeKey::User, ConfigNodeValue::Ratoml(&user_config)));
+        }
+
+        v.into_iter()
+    }
+
+    pub fn user_config_path(&self) -> &VfsPath {
+        &self.user_config_path
+    }
+
+    pub fn should_update(&self) -> bool {
+        self.should_update
+    }
+
+    // FIXME @alibektas : Server's health uses error sink but in other places it is not used atm.
+    pub fn apply_change(&self, change: ConfigChange, error_sink: &mut ConfigError) -> Config {
+        let mut config = self.clone();
+        let mut toml_errors = vec![];
+        let mut json_errors = vec![];
+
+        config.should_update = false;
+
+        if let Some((file_id, change)) = change.user_config_change {
+            config.user_config = Some(RatomlNode {
+                file_id,
+                config: ConfigInput::from_toml(
+                    toml::from_str(change.to_string().as_str()).unwrap(),
+                    &mut toml_errors,
+                ),
+            });
+            config.should_update = true;
+        }
+
+        if let Some(mut json) = change.client_config_change {
+            tracing::info!("updating config from JSON: {:#}", json);
+            if !(json.is_null() || json.as_object().map_or(false, |it| it.is_empty())) {
+                let detached_files =
+                    get_field::<Vec<PathBuf>>(&mut json, &mut json_errors, "detachedFiles", None)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(AbsPathBuf::assert)
+                        .collect();
+
+                patch_old_style::patch_json_for_outdated_configs(&mut json);
+
+                config.client_config = ClientConfig {
+                    config: ConfigInput::from_json(json, &mut json_errors),
+                    detached_files,
+                }
+            }
+            config.should_update = true;
+        }
+
+        if let Some((file_id, change)) = change.root_ratoml_change {
+            config.root_ratoml = Some(RatomlNode {
+                file_id,
+                config: ConfigInput::from_toml(
+                    toml::from_str(change.to_string().as_str()).unwrap(),
+                    &mut toml_errors,
+                ),
+            });
+            config.should_update = true;
+        }
+
+        if let Some(change) = change.ratoml_file_change {
+            for (source_root_id, (file_id, _, text)) in change {
+                if let Some(text) = text {
+                    config.ratoml_files.insert(
+                        source_root_id,
+                        RatomlNode {
+                            file_id,
+                            config: ConfigInput::from_toml(
+                                toml::from_str(&*text).unwrap(),
+                                &mut toml_errors,
+                            ),
+                        },
+                    );
+                } else {
+                    todo!();
+                }
+            }
+        }
+
+        if let Some(source_root_map) = change.source_map_change {
+            config.source_root_parent_map = source_root_map;
+        }
+
+        let snips = self.completion_snippets_custom().to_owned();
+
+        for (name, def) in snips.iter() {
+            if def.prefix.is_empty() && def.postfix.is_empty() {
+                continue;
+            }
+            let scope = match def.scope {
+                SnippetScopeDef::Expr => SnippetScope::Expr,
+                SnippetScopeDef::Type => SnippetScope::Type,
+                SnippetScopeDef::Item => SnippetScope::Item,
+            };
+            match Snippet::new(
+                &def.prefix,
+                &def.postfix,
+                &def.body,
+                def.description.as_ref().unwrap_or(name),
+                &def.requires,
+                scope,
+            ) {
+                Some(snippet) => config.snippets.push(snippet),
+                None => error_sink.0.push(ConfigErrorInner::JsonError(
+                    format!("snippet {name} is invalid"),
+                    <serde_json::Error as serde::de::Error>::custom(
+                        "snippet path is invalid or triggers are missing",
+                    ),
+                )),
+            }
+        }
+
+        if config.check_command().is_empty() {
+            error_sink.0.push(ConfigErrorInner::JsonError(
+                "/check/command".to_owned(),
+                serde_json::Error::custom("expected a non-empty string"),
+            ));
+        }
+        config
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct ConfigChange {
+    user_config_change: Option<(FileId, Arc<str>)>,
+    root_ratoml_change: Option<(FileId, Arc<str>)>,
+    client_config_change: Option<serde_json::Value>,
+    ratoml_file_change: Option<FxHashMap<SourceRootId, (FileId, VfsPath, Option<Arc<str>>)>>,
+    source_map_change: Option<Arc<FxHashMap<SourceRootId, SourceRootId>>>,
+}
+
+impl ConfigChange {
+    pub fn change_ratoml(
+        &mut self,
+        source_root: SourceRootId,
+        file_id: FileId,
+        vfs_path: VfsPath,
+        content: Option<Arc<str>>,
+    ) -> Option<(FileId, VfsPath, Option<Arc<str>>)> {
+        if let Some(changes) = self.ratoml_file_change.as_mut() {
+            changes.insert(source_root, (file_id, vfs_path, content))
+        } else {
+            let mut map = FxHashMap::default();
+            map.insert(source_root, (file_id, vfs_path, content));
+            self.ratoml_file_change = Some(map);
+            None
+        }
+    }
+
+    pub fn change_user_config(&mut self, content: Option<(FileId, Arc<str>)>) {
+        assert!(self.user_config_change.is_none()); // Otherwise it is a double write.
+        self.user_config_change = content;
+    }
+
+    pub fn change_root_ratoml(&mut self, content: Option<(FileId, Arc<str>)>) {
+        assert!(self.user_config_change.is_none()); // Otherwise it is a double write.
+        self.root_ratoml_change = content;
+    }
+
+    pub fn change_client_config(&mut self, change: serde_json::Value) {
+        self.client_config_change = Some(change);
+    }
+
+    pub fn change_source_root_parent_map(
+        &mut self,
+        source_root_map: Arc<FxHashMap<SourceRootId, SourceRootId>>,
+    ) {
+        assert!(self.source_map_change.is_none());
+        self.source_map_change = Some(source_root_map.clone());
+    }
 }
 
 macro_rules! try_ {
@@ -839,23 +1126,37 @@ pub struct ClientCommandsConfig {
 }
 
 #[derive(Debug)]
-pub struct ConfigError {
-    errors: Vec<(String, serde_json::Error)>,
+pub enum ConfigErrorInner {
+    JsonError(String, serde_json::Error),
+    Toml(String, toml::de::Error),
 }
+
+#[derive(Debug, Default)]
+pub struct ConfigError(Vec<ConfigErrorInner>);
+
+impl ConfigError {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl ConfigError {}
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let errors = self.errors.iter().format_with("\n", |(key, e), f| {
-            f(key)?;
-            f(&": ")?;
-            f(e)
+        let errors = self.0.iter().format_with("\n", |inner, f| match inner {
+            ConfigErrorInner::JsonError(key, e) => {
+                f(key)?;
+                f(&": ")?;
+                f(e)
+            }
+            ConfigErrorInner::Toml(key, e) => {
+                f(key)?;
+                f(&": ")?;
+                f(e)
+            }
         });
-        write!(
-            f,
-            "invalid config value{}:\n{}",
-            if self.errors.len() == 1 { "" } else { "s" },
-            errors
-        )
+        write!(f, "invalid config value{}:\n{}", if self.0.len() == 1 { "" } else { "s" }, errors)
     }
 }
 
@@ -867,19 +1168,42 @@ impl Config {
         caps: ClientCapabilities,
         workspace_roots: Vec<AbsPathBuf>,
         is_visual_studio_code: bool,
+        user_config_path: Option<PathBuf>,
     ) -> Self {
+        let user_config_path = if let Some(user_config_path) = user_config_path {
+            user_config_path.join("rust-analyzer").join("rust-analyzer.toml")
+        } else {
+            config_dir()
+                .expect("A config dir is expected to existed on all platforms ra supports.")
+                .join("rust-analyzer")
+                .join("rust-analyzer.toml")
+        };
+
+        // A user config cannot be a virtual path as rust-analyzer cannot support watching changes in virtual paths.
+        // See `GlobalState::process_changes` to get more info.
+        let user_config_path = VfsPath::from(AbsPathBuf::assert(user_config_path));
+        let root_ratoml_path = {
+            let mut p = root_path.clone();
+            p.push("rust-analyzer.toml");
+            VfsPath::new_real_path(p.to_string())
+        };
+
         Config {
             caps,
-            detached_files: Vec::new(),
             discovered_projects: Vec::new(),
             root_path,
             snippets: Default::default(),
             workspace_roots,
             is_visual_studio_code,
-            client_config: ConfigInput::default(),
-            user_config: ConfigInput::default(),
+            client_config: ClientConfig::default(),
+            user_config: None,
             ratoml_files: FxHashMap::default(),
             default_config: ConfigData::default(),
+            source_root_parent_map: Arc::new(FxHashMap::default()),
+            user_config_path,
+            root_ratoml: None,
+            root_ratoml_path,
+            should_update: false,
         }
     }
 
@@ -902,71 +1226,6 @@ impl Config {
         self.workspace_roots.extend(paths);
     }
 
-    pub fn update(&mut self, mut json: serde_json::Value) -> Result<(), ConfigError> {
-        tracing::info!("updating config from JSON: {:#}", json);
-        if json.is_null() || json.as_object().map_or(false, |it| it.is_empty()) {
-            return Ok(());
-        }
-        let mut errors = Vec::new();
-        self.detached_files =
-            get_field::<Vec<PathBuf>>(&mut json, &mut errors, "detachedFiles", None)
-                .unwrap_or_default()
-                .into_iter()
-                .map(AbsPathBuf::assert)
-                .collect();
-        patch_old_style::patch_json_for_outdated_configs(&mut json);
-        self.client_config = ConfigInput::from_json(json, &mut errors);
-        tracing::debug!(?self.client_config, "deserialized config data");
-        self.snippets.clear();
-
-        let snips = self.completion_snippets_custom(None).to_owned();
-
-        for (name, def) in snips.iter() {
-            if def.prefix.is_empty() && def.postfix.is_empty() {
-                continue;
-            }
-            let scope = match def.scope {
-                SnippetScopeDef::Expr => SnippetScope::Expr,
-                SnippetScopeDef::Type => SnippetScope::Type,
-                SnippetScopeDef::Item => SnippetScope::Item,
-            };
-            match Snippet::new(
-                &def.prefix,
-                &def.postfix,
-                &def.body,
-                def.description.as_ref().unwrap_or(name),
-                &def.requires,
-                scope,
-            ) {
-                Some(snippet) => self.snippets.push(snippet),
-                None => errors.push((
-                    format!("snippet {name} is invalid"),
-                    <serde_json::Error as serde::de::Error>::custom(
-                        "snippet path is invalid or triggers are missing",
-                    ),
-                )),
-            }
-        }
-
-        self.validate(&mut errors);
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(ConfigError { errors })
-        }
-    }
-
-    fn validate(&self, error_sink: &mut Vec<(String, serde_json::Error)>) {
-        use serde::de::Error;
-        if self.check_command().is_empty() {
-            error_sink.push((
-                "/check/command".to_owned(),
-                serde_json::Error::custom("expected a non-empty string"),
-            ));
-        }
-    }
-
     pub fn json_schema() -> serde_json::Value {
         ConfigInput::json_schema()
     }
@@ -975,12 +1234,12 @@ impl Config {
         &self.root_path
     }
 
-    pub fn caps(&self) -> &lsp_types::ClientCapabilities {
-        &self.caps
+    pub fn root_ratoml_path(&self) -> &VfsPath {
+        &self.root_ratoml_path
     }
 
-    pub fn detached_files(&self) -> &[AbsPathBuf] {
-        &self.detached_files
+    pub fn caps(&self) -> &lsp_types::ClientCapabilities {
+        &self.caps
     }
 }
 
@@ -991,22 +1250,20 @@ impl Config {
             allowed: None,
             insert_use: self.insert_use_config(source_root),
             prefer_no_std: self.imports_preferNoStd(source_root).to_owned(),
-            assist_emit_must_use: self.assist_emitMustUse().to_owned(),
+            assist_emit_must_use: self.assist_emitMustUse(source_root).to_owned(),
             prefer_prelude: self.imports_preferPrelude(source_root).to_owned(),
         }
     }
 
     pub fn completion(&self, source_root: Option<SourceRootId>) -> CompletionConfig {
         CompletionConfig {
-            enable_postfix_completions: self.completion_postfix_enable(source_root).to_owned(),
-            enable_imports_on_the_fly: self.completion_autoimport_enable(source_root).to_owned()
+            enable_postfix_completions: self.completion_postfix_enable().to_owned(),
+            enable_imports_on_the_fly: self.completion_autoimport_enable().to_owned()
                 && completion_item_edit_resolve(&self.caps),
-            enable_self_on_the_fly: self.completion_autoself_enable(source_root).to_owned(),
-            enable_private_editable: self.completion_privateEditable_enable(source_root).to_owned(),
-            full_function_signatures: self
-                .completion_fullFunctionSignatures_enable(source_root)
-                .to_owned(),
-            callable: match self.completion_callable_snippets(source_root) {
+            enable_self_on_the_fly: self.completion_autoself_enable().to_owned(),
+            enable_private_editable: self.completion_privateEditable_enable().to_owned(),
+            full_function_signatures: self.completion_fullFunctionSignatures_enable().to_owned(),
+            callable: match self.completion_callable_snippets() {
                 CallableCompletionDef::FillArguments => Some(CallableSnippets::FillArguments),
                 CallableCompletionDef::AddParentheses => Some(CallableSnippets::AddParentheses),
                 CallableCompletionDef::None => None,
@@ -1024,10 +1281,16 @@ impl Config {
                     .snippet_support?
             )),
             snippets: self.snippets.clone().to_vec(),
-            limit: self.completion_limit(source_root).to_owned(),
-            enable_term_search: self.completion_termSearch_enable(source_root).to_owned(),
+            limit: self.completion_limit().to_owned(),
+            enable_term_search: self.completion_termSearch_enable().to_owned(),
             prefer_prelude: self.imports_preferPrelude(source_root).to_owned(),
         }
+    }
+
+    pub fn detached_files(&self) -> &Vec<AbsPathBuf> {
+        // FIXME @alibektas : This is the only config that is confusing. If it's a proper configuration
+        // why is it not among the others? If it's client only which I doubt it is current state should be alright
+        &self.client_config.detached_files
     }
 
     pub fn diagnostics(&self, source_root: Option<SourceRootId>) -> DiagnosticsConfig {
@@ -1037,7 +1300,7 @@ impl Config {
             proc_macros_enabled: *self.procMacro_enable(),
             disable_experimental: !self.diagnostics_experimental_enable(),
             disabled: self.diagnostics_disabled().clone(),
-            expr_fill_default: match self.assist_expressionFillDefault() {
+            expr_fill_default: match self.assist_expressionFillDefault(source_root) {
                 ExprFillDefaultDef::Todo => ExprFillDefaultMode::Todo,
                 ExprFillDefaultDef::Default => ExprFillDefaultMode::Default,
             },
@@ -1966,7 +2229,7 @@ enum SnippetScopeDef {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(default)]
-struct SnippetDef {
+pub(crate) struct SnippetDef {
     #[serde(with = "single_or_array")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     prefix: Vec<String>,
@@ -2061,7 +2324,7 @@ enum ImportGranularityDef {
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 #[serde(rename_all = "snake_case")]
-enum CallableCompletionDef {
+pub(crate) enum CallableCompletionDef {
     FillArguments,
     AddParentheses,
     None,
@@ -2266,13 +2529,28 @@ macro_rules! _impl_for_config_data {
             $(
                 $($doc)*
                 #[allow(non_snake_case)]
-                fn $field(&self, _source_root: Option<SourceRootId>) -> &$ty {
-                    if let Some(v) = self.client_config.local.$field.as_ref() {
+                fn $field(&self, source_root: Option<SourceRootId>) -> &$ty {
+
+                    if source_root.is_some() {
+                        let mut par: Option<SourceRootId> = source_root;
+                        while let Some(source_root_id) = par {
+                            par = self.source_root_parent_map.get(&source_root_id).copied();
+                            if let Some(config) = self.ratoml_files.get(&source_root_id) {
+                                if let Some(value) = config.config.local.$field.as_ref() {
+                                    return value;
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(v) = self.client_config.config.local.$field.as_ref() {
                         return &v;
                     }
 
-                    if let Some(v) = self.user_config.local.$field.as_ref() {
-                        return &v;
+                    if let Some(user_config) = self.user_config.as_ref() {
+                        if let Some(v) = user_config.config.local.$field.as_ref() {
+                            return &v;
+                        }
                     }
 
                     &self.default_config.local.$field
@@ -2290,12 +2568,21 @@ macro_rules! _impl_for_config_data {
                 $($doc)*
                 #[allow(non_snake_case)]
                 pub(crate) fn $field(&self) -> &$ty {
-                    if let Some(v) = self.client_config.global.$field.as_ref() {
+
+                    if let Some(root_path_ratoml) = self.root_ratoml.as_ref() {
+                        if let Some(v) = root_path_ratoml.config.global.$field.as_ref() {
+                            return &v;
+                        }
+                    }
+
+                    if let Some(v) = self.client_config.config.global.$field.as_ref() {
                         return &v;
                     }
 
-                    if let Some(v) = self.user_config.global.$field.as_ref() {
-                        return &v;
+                    if let Some(user_config) = self.user_config.as_ref() {
+                        if let Some(v) = user_config.config.global.$field.as_ref() {
+                            return &v;
+                        }
                     }
 
                     &self.default_config.global.$field
@@ -2446,7 +2733,7 @@ use _default_val as default_val;
 use _impl_for_config_data as impl_for_config_data;
 
 #[derive(Default, Debug, Clone)]
-struct ConfigData {
+pub struct ConfigData {
     global: GlobalConfigData,
     local: LocalConfigData,
     client: ClientConfigData,
@@ -2456,7 +2743,7 @@ struct ConfigData {
 /// some rust-analyzer.toml file or JSON blob. An empty rust-analyzer.toml corresponds to
 /// all fields being None.
 #[derive(Debug, Clone, Serialize, Default)]
-struct ConfigInput {
+pub struct ConfigInput {
     #[serde(flatten)]
     global: GlobalConfigInput,
     #[serde(flatten)]
@@ -3045,12 +3332,17 @@ mod tests {
             Default::default(),
             vec![],
             false,
+            None,
         );
-        config
-            .update(serde_json::json!({
-                "procMacro_server": null,
-            }))
-            .unwrap();
+
+        let mut change = ConfigChange::default();
+        change.change_client_config(serde_json::json!({
+            "procMacro" : {
+                "server": null,
+        }}));
+
+        let mut error_sink = ConfigError::default();
+        config = config.apply_change(change, &mut error_sink);
         assert_eq!(config.proc_macro_srv(), None);
     }
 
@@ -3061,12 +3353,16 @@ mod tests {
             Default::default(),
             vec![],
             false,
+            None,
         );
-        config
-            .update(serde_json::json!({
-                "procMacro": {"server": project_root().display().to_string()}
-            }))
-            .unwrap();
+        let mut change = ConfigChange::default();
+        change.change_client_config(serde_json::json!({
+        "procMacro" : {
+            "server": project_root().display().to_string(),
+        }}));
+
+        let mut error_sink = ConfigError::default();
+        config = config.apply_change(change, &mut error_sink);
         assert_eq!(config.proc_macro_srv(), Some(AbsPathBuf::try_from(project_root()).unwrap()));
     }
 
@@ -3077,12 +3373,19 @@ mod tests {
             Default::default(),
             vec![],
             false,
+            None,
         );
-        config
-            .update(serde_json::json!({
-                "procMacro": {"server": "./server"}
-            }))
-            .unwrap();
+
+        let mut change = ConfigChange::default();
+
+        change.change_client_config(serde_json::json!({
+        "procMacro" : {
+            "server": "./server"
+        }}));
+
+        let mut error_sink = ConfigError::default();
+        config = config.apply_change(change, &mut error_sink);
+
         assert_eq!(
             config.proc_macro_srv(),
             Some(AbsPathBuf::try_from(project_root().join("./server")).unwrap())
@@ -3096,12 +3399,17 @@ mod tests {
             Default::default(),
             vec![],
             false,
+            None,
         );
-        config
-            .update(serde_json::json!({
-                "rust": { "analyzerTargetDir": null }
-            }))
-            .unwrap();
+
+        let mut change = ConfigChange::default();
+
+        change.change_client_config(serde_json::json!({
+            "rust" : { "analyzerTargetDir" : null }
+        }));
+
+        let mut error_sink = ConfigError::default();
+        config = config.apply_change(change, &mut error_sink);
         assert_eq!(config.cargo_targetDir(), &None);
         assert!(
             matches!(config.flycheck(), FlycheckConfig::CargoCommand { target_dir, .. } if target_dir.is_none())
@@ -3115,12 +3423,17 @@ mod tests {
             Default::default(),
             vec![],
             false,
+            None,
         );
-        config
-            .update(serde_json::json!({
-                "rust": { "analyzerTargetDir": true }
-            }))
-            .unwrap();
+
+        let mut change = ConfigChange::default();
+        change.change_client_config(serde_json::json!({
+            "rust" : { "analyzerTargetDir" : true }
+        }));
+
+        let mut error_sink = ConfigError::default();
+        config = config.apply_change(change, &mut error_sink);
+
         assert_eq!(config.cargo_targetDir(), &Some(TargetDirectory::UseSubdirectory(true)));
         assert!(
             matches!(config.flycheck(), FlycheckConfig::CargoCommand { target_dir, .. } if target_dir == Some(PathBuf::from("target/rust-analyzer")))
@@ -3134,12 +3447,17 @@ mod tests {
             Default::default(),
             vec![],
             false,
+            None,
         );
-        config
-            .update(serde_json::json!({
-                "rust": { "analyzerTargetDir": "other_folder" }
-            }))
-            .unwrap();
+
+        let mut change = ConfigChange::default();
+        change.change_client_config(serde_json::json!({
+            "rust" : { "analyzerTargetDir" : "other_folder" }
+        }));
+
+        let mut error_sink = ConfigError::default();
+        config = config.apply_change(change, &mut error_sink);
+
         assert_eq!(
             config.cargo_targetDir(),
             &Some(TargetDirectory::Directory(PathBuf::from("other_folder")))

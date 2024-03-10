@@ -15,7 +15,11 @@ use std::{env, fs, path::PathBuf, process::ExitCode, sync::Arc};
 
 use anyhow::Context;
 use lsp_server::Connection;
-use rust_analyzer::{cli::flags, config::Config, from_json};
+use rust_analyzer::{
+    cli::flags,
+    config::{Config, ConfigChange, ConfigError},
+    from_json,
+};
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use vfs::AbsPathBuf;
 
@@ -210,16 +214,21 @@ fn run_server() -> anyhow::Result<()> {
         })
         .filter(|workspaces| !workspaces.is_empty())
         .unwrap_or_else(|| vec![root_path.clone()]);
-    let mut config = Config::new(root_path, capabilities, workspace_roots, is_visual_studio_code);
+    let mut config =
+        Config::new(root_path, capabilities, workspace_roots, is_visual_studio_code, None);
     if let Some(json) = initialization_options {
-        if let Err(e) = config.update(json) {
+        let mut change = ConfigChange::default();
+        change.change_client_config(json);
+        let mut error_sink = ConfigError::default();
+        config = config.apply_change(change, &mut error_sink);
+        if !error_sink.is_empty() {
             use lsp_types::{
                 notification::{Notification, ShowMessage},
                 MessageType, ShowMessageParams,
             };
             let not = lsp_server::Notification::new(
                 ShowMessage::METHOD.to_owned(),
-                ShowMessageParams { typ: MessageType::WARNING, message: e.to_string() },
+                ShowMessageParams { typ: MessageType::WARNING, message: error_sink.to_string() },
             );
             connection.sender.send(lsp_server::Message::Notification(not)).unwrap();
         }
