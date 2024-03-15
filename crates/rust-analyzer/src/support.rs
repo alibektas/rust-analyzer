@@ -9,14 +9,13 @@ use std::{
 use crossbeam_channel::{after, select, Receiver};
 use lsp_server::{Connection, Message, Notification, Request};
 use lsp_types::{notification::Exit, request::Shutdown, TextDocumentIdentifier, Url};
-use rust_analyzer::{config::Config, lsp, main_loop};
 use serde::Serialize;
 use serde_json::{json, to_string_pretty, Value};
 use test_utils::FixtureWithProjectMeta;
 use tracing_subscriber::fmt::TestWriter;
 use vfs::AbsPathBuf;
 
-use crate::testdir::TestDir;
+use crate::{config::Config, lsp, main_loop, testdir::TestDir};
 
 pub(crate) struct Project<'a> {
     fixture: &'a str,
@@ -91,7 +90,7 @@ impl Project<'_> {
 
         static INIT: Once = Once::new();
         INIT.call_once(|| {
-            let _ = rust_analyzer::tracing::Config {
+            let _ = crate::tracing::Config {
                 writer: TestWriter::default(),
                 // Deliberately enable all `error` logs if the user has not set RA_LOG, as there is usually
                 // useful information in there for debugging.

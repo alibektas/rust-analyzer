@@ -25,7 +25,9 @@ mod main_loop;
 mod mem_docs;
 mod op_queue;
 mod reload;
+mod support;
 mod task_pool;
+mod testdir;
 mod version;
 
 mod handlers {
