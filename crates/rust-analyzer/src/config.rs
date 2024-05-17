@@ -2723,7 +2723,7 @@ impl GlobalLocalConfigInput {
 }
 
 fn get_field_toml<T: DeserializeOwned>(
-    val: &toml::Table,
+    val: &mut toml::Table,
     error_sink: &mut Vec<(String, toml::de::Error)>,
     field: &'static str,
     alias: Option<&'static str>,
@@ -2735,8 +2735,8 @@ fn get_field_toml<T: DeserializeOwned>(
             let subkeys = field.split('_');
             let mut v = val;
             for subkey in subkeys {
-                let val = v.get(subkey)?;
-                if let Some(map) = val.as_table() {
+                let val = v.get_mut(subkey)?;
+                if let Some(map) = val.as_table_mut() {
                     v = map;
                 } else {
                     return Some(toml::Value::try_into(val.clone()).map_err(|e| (e, v)));
