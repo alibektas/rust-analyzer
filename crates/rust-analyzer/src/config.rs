@@ -758,10 +758,10 @@ impl Config {
         if let Some(change) = change.ratoml_file_change {
             for (source_root_id, (_, text)) in change {
                 if let Some(text) = text {
-                    if let Ok(change) = toml::from_str(&text) {
+                    if let Ok(mut change) = toml::from_str(&text) {
                         config.ratoml_files.insert(
                             source_root_id,
-                            LocalConfigInput::from_toml(&change, &mut toml_errors),
+                            LocalConfigInput::from_toml(&mut change, &mut toml_errors),
                         );
                     }
                 }
@@ -2618,7 +2618,7 @@ macro_rules! _config_data {
                 )*}
             }
 
-            fn from_toml(toml: &toml::Table, error_sink: &mut Vec<(String, toml::de::Error)>) -> Self {
+            fn from_toml(toml: &mut toml::Table, error_sink: &mut Vec<(String, toml::de::Error)>) -> Self {
                 Self {$(
                     $field: get_field_toml::<$ty>(
                         toml,
@@ -2712,12 +2712,12 @@ struct GlobalLocalConfigInput {
 
 impl GlobalLocalConfigInput {
     fn from_toml(
-        toml: toml::Table,
+        mut toml: toml::Table,
         error_sink: &mut Vec<(String, toml::de::Error)>,
     ) -> GlobalLocalConfigInput {
         GlobalLocalConfigInput {
-            global: GlobalConfigInput::from_toml(&toml, error_sink),
-            local: LocalConfigInput::from_toml(&toml, error_sink),
+            global: GlobalConfigInput::from_toml(&mut toml, error_sink),
+            local: LocalConfigInput::from_toml(&mut toml, error_sink),
         }
     }
 }
