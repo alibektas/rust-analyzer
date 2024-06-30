@@ -1,10 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::assist_context::{AssistContext, Assists};
-use hir::{HasSource, HasVisibility, HirDisplay, StructKind};
+use hir::{FieldSource, HasSource, HasVisibility, HirDisplay, StructKind};
 use ide_db::assists::{AssistId, AssistKind};
 use syntax::{
-    ast::{self, edit::IndentLevel, HasGenericParams, HasName, HasVisibility as AstVisibility, Lifetime, LifetimeParam, RefType},
+    ast::{
+        self, edit::IndentLevel, GenericArg, HasGenericParams, HasName,
+        HasVisibility as AstVisibility, LifetimeParam, RefType,
+    },
     AstNode,
 };
 
@@ -28,13 +31,9 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
 
     // If field has a type already defined, resolve it to its source type.
     let src_ty = ctx.sema.resolve_type(&tgt_field.ty()?)?;
-    
-    let src_hir_strukt = if let Some(hir::Adt::Struct(skt)) = src_ty.as_adt() {
-        skt
-    } else {
-        return None
-    };
 
+    let src_hir_strukt =
+        if let Some(hir::Adt::Struct(skt)) = src_ty.as_adt() { skt } else { return None };
 
     // Adopt target field's visibility to the expanding fields of the source.
     let tgt_field_vis = if let Some(vis) = tgt_field.visibility() {
@@ -51,43 +50,66 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
     let tgt_hir_strukt = ctx.sema.to_def(&tgt_strukt)?;
     let tgt_module = tgt_hir_strukt.module(db);
     let tgt_field = tgt_field.clone_for_update();
-    let tgt_field_ty = tgt_field.ty()?;
-
+    // TODO let tgt_field_ty = tgt_field.ty()?;
 
     if !src_hir_strukt.is_visible_from(db, tgt_module) {
         return None;
     }
 
     let src_strukt = src_hir_strukt.source(db)?;
-    if let Some(a) = src_strukt.value.generic_param_list() {
-        dbg!(a.lifetime_params().map(|lt| (lt , None)).collect::<HashMap<LifetimeParam , Option<LifetimeParam>>>());
-    }
 
+    let mut lifetime_map = HashMap::default();
+    if let Some(a) = src_strukt.value.generic_param_list() {
+        lifetime_map = tgt_field
+            .ty()?
+            .generic_arg_list()?
+            .generic_args()
+            .into_iter()
+            .filter_map(|arg| {
+                if let GenericArg::LifetimeArg(arg) = arg {
+                    return Some(arg);
+                } else {
+                    return None;
+                }
+            })
+            .zip(a.lifetime_params().collect::<Vec<LifetimeParam>>())
+            .collect::<HashMap<ast::LifetimeArg, ast::LifetimeParam>>();
+    }
 
     let flds = src_hir_strukt
         .fields(db)
         .into_iter()
-        .filter_map(|field| {
+        .filter(|field| {
             if !field.is_visible_from(db, tgt_module) {
-                return None;
+                return false;
             }
 
-            Some(field)
+            true
         })
         .filter_map(|fld| {
-            let targeted_ty =
-                if let Ok(tty) = fld.ty(db).display_source_code(db, tgt_module.into(), true) {
-                    tty
-                } else {
-                    return None;
-                };
+            if let Some(source_field) = fld.source(db) {
+                let field_ast = source_field.value;
+                if let FieldSource::Named(field_ast) = field_ast {
+                    dbg!("ABC", &field_ast.to_string());
+                    let ty = field_ast.ty()?;
+                    dbg!(&ty.to_string());
+
+                    if let ast::Type::RefType(rf) = ty {
+                        dbg!(rf.lifetime());
+                    }
+
+                    // arg_list.lifetime_args().map(|arg| {
+                    //     dbg!(&arg , lifetime_map.get(&arg));
+                    // });
+                }
+            }
 
             Some(format!(
                 "{}{}_{} : {}",
                 tgt_field_vis,
                 tgt_field_name.to_string(),
                 fld.name(db).as_text()?,
-                targeted_ty
+                "TODO"
             ))
         })
         .collect::<Vec<String>>();
@@ -104,25 +126,10 @@ pub(crate) fn expand_struct_field(acc: &mut Assists, ctx: &AssistContext<'_>) ->
         |edit| {
             edit.replace(
                 tgt_field.syntax().text_range(),
-                flds.join(
-                    format!(",\n{}", IndentLevel::from_node(tgt_field.syntax())).as_str(),
-                ),
+                flds.join(format!(",\n{}", IndentLevel::from_node(tgt_field.syntax())).as_str()),
             );
         },
     );
-
-    Some(())
-}
-
-
-enum TypeKind {
-    Mut(RefTy),
-    Shared(RefTy),
-    Owned
-} 
-
-struct RefTy {
-    lifetime : String,
 }
 
 #[cfg(test)]
@@ -283,6 +290,189 @@ struct Target<'a> {
     src_b : &'a str
 }
 "#,
+        )
+    }
+
+    #[test]
+    fn test_1() {
+        check_assist(
+            expand_struct_field,
+            r#"
+struct Source<'a, D> {
+    i: C<'a, D>,
+    j: i32,
+}
+
+struct C<'abc, D> {
+    k: &'abc D,
+}
+
+struct Target<'def> {
+    a: Sour$0ce<'def, i32>,
+}"#,
+            r#"
+struct Source<'a, D> {
+    i: C<'a, D>,
+    j: i32,
+}
+
+struct C<'abc, D> {
+    k: &'abc D,
+}
+
+struct Target<'def> {
+    a_i: C<'def, i32>,
+    a_j: i32,
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn test_2() {
+        check_assist(
+            expand_struct_field,
+            r#"
+struct Source<T>
+where
+    T: Iterator,
+    T::Item: Copy,
+    String: PartialEq<T>,
+    i32: Default,
+{
+    f: T,
+}
+
+struct Target<T>
+where
+    T: Iterator,
+    T::Item: Copy,
+    String: PartialEq<T>,
+    i32: Default,
+{
+    a: Sou$0rce<T>,
+}            
+            "#,
+            r#"
+struct Source<T>
+where
+    T: Iterator,
+    T::Item: Copy,
+    String: PartialEq<T>,
+    i32: Default,
+{
+    f: T,
+}
+
+struct Target<T>
+where
+    T: Iterator,
+    T::Item: Copy,
+    String: PartialEq<T>,
+    i32: Default,
+{
+    a_f: T,
+}"#,
+        )
+    }
+
+    #[test]
+    fn test_3() {
+        check_assist(
+            expand_struct_field,
+            r#"
+struct Source<T, const N: usize> {
+    a: [T; N],
+}
+
+struct Target {
+    b: So$0urce<i32, 5>,
+}
+            "#,
+            r#"
+struct Source<T, const N: usize> {
+    a: [T; N],
+}
+
+struct Target {
+    b_a: [i32; 5],
+}
+"#,
+        )
+    }
+
+    #[test]
+    fn test_4() {
+        check_assist(
+            expand_struct_field,
+            r#"
+struct Source<T, const N: usize = 5> {
+    a: [T; N],
+}
+
+struct Target {
+    b: So$0urce<i32>,
+}
+
+"#,
+        r#"
+struct Source<T, const N: usize = 5> {
+    a: [T; N],
+}
+
+struct Target {
+    b: [i32; 5],
+}"#
+        )
+    }
+
+    #[test]
+    fn test_5() {
+        check_assist(
+            expand_struct_field,
+            r#"
+struct Source<T = i32> {
+    b: T,
+}
+
+struct Target {
+    a: So$0urce,
+}
+"#,
+            r#"
+struct Source<T = i32> {
+    b: T,
+}
+
+struct Target {
+    a_b: i32,
+}
+    "#
+        )
+    }
+
+    #[test]
+    fn test_6() {
+        check_assist(
+            expand_struct_field,
+            r#"
+struct Source<T = i32> {
+    b: T,
+}
+
+struct Target {
+    a: So$0urce,
+}
+"#,
+            r#"
+struct Source<T = i32> {
+    b: T,
+}
+
+struct Target {
+    a_b: i32,
+}
+"#
         )
     }
 }
