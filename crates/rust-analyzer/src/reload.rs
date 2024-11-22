@@ -310,6 +310,7 @@ impl GlobalState {
                             project_model::ProjectWorkspace::load(
                                 manifest.clone(),
                                 &cargo_config,
+                                false,
                                 &progress,
                             )
                         }

@@ -80,7 +80,7 @@ impl flags::AnalysisStats {
         let path = AbsPathBuf::assert_utf8(env::current_dir()?.join(&self.path));
         let manifest = ProjectManifest::discover_single(&path)?;
 
-        let mut workspace = ProjectWorkspace::load(manifest, &cargo_config, no_progress)?;
+        let mut workspace = ProjectWorkspace::load(manifest, &cargo_config, false, no_progress)?;
         let metadata_time = db_load_sw.elapsed();
         let load_cargo_config = LoadCargoConfig {
             load_out_dirs_from_check: !self.disable_build_scripts,

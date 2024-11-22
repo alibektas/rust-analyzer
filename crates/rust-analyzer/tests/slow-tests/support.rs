@@ -116,6 +116,7 @@ impl Project<'_> {
         let mut buf = Vec::new();
         flags::Lsif::run(
             flags::Lsif {
+                no_deps: false,
                 path: tmp_dir_path.join(self.roots.iter().exactly_one().unwrap()).into(),
                 exclude_vendored_libraries: false,
             },

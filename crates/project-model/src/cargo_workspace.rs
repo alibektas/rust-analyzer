@@ -263,11 +263,12 @@ impl CargoWorkspace {
         cargo_toml: &ManifestPath,
         current_dir: &AbsPath,
         config: &CargoConfig,
+        no_deps: bool,
         sysroot: &Sysroot,
         locked: bool,
         progress: &dyn Fn(String),
     ) -> anyhow::Result<(cargo_metadata::Metadata, Option<anyhow::Error>)> {
-        Self::fetch_metadata_(cargo_toml, current_dir, config, sysroot, locked, false, progress)
+        Self::fetch_metadata_(cargo_toml, current_dir, config, sysroot, locked, no_deps, progress)
     }
 
     fn fetch_metadata_(

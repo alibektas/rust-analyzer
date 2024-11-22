@@ -156,6 +156,10 @@ xflags::xflags! {
         cmd lsif {
             required path: PathBuf
 
+            /// Set --no-deps when running `cargo metadata` to speed up things
+            /// while giving up on indexing of dependencies.
+            optional --no-deps
+
             /// Exclude code from vendored libraries from the resulting index.
             optional --exclude-vendored-libraries
         }
@@ -295,6 +299,7 @@ pub struct Search {
 pub struct Lsif {
     pub path: PathBuf,
 
+    pub no_deps: bool,
     pub exclude_vendored_libraries: bool,
 }
 

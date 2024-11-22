@@ -191,15 +191,17 @@ impl ProjectWorkspace {
     pub fn load(
         manifest: ProjectManifest,
         config: &CargoConfig,
+        no_deps: bool,
         progress: &dyn Fn(String),
     ) -> anyhow::Result<ProjectWorkspace> {
-        ProjectWorkspace::load_inner(&manifest, config, progress)
+        ProjectWorkspace::load_inner(&manifest, config, no_deps, progress)
             .with_context(|| format!("Failed to load the project at {manifest}"))
     }
 
     fn load_inner(
         manifest: &ProjectManifest,
         config: &CargoConfig,
+        no_deps: bool,
         progress: &dyn Fn(String),
     ) -> anyhow::Result<ProjectWorkspace> {
         let res = match manifest {
@@ -263,6 +265,7 @@ impl ProjectWorkspace {
                             features: crate::CargoFeatures::default(),
                             ..config.clone()
                         },
+                        no_deps,
                         &sysroot,
                         false,
                         progress,
@@ -316,6 +319,7 @@ impl ProjectWorkspace {
                     cargo_toml,
                     cargo_toml.parent(),
                     config,
+                    no_deps,
                     &sysroot,
                         false,
                         progress,
@@ -414,16 +418,23 @@ impl ProjectWorkspace {
             &config.extra_env,
         );
 
-        let cargo_script =
-            CargoWorkspace::fetch_metadata(detached_file, dir, config, &sysroot, false, &|_| ())
-                .ok()
-                .map(|(ws, error)| {
-                    (
-                        CargoWorkspace::new(ws, detached_file.clone()),
-                        WorkspaceBuildScripts::default(),
-                        error.map(Arc::new),
-                    )
-                });
+        let cargo_script = CargoWorkspace::fetch_metadata(
+            detached_file,
+            dir,
+            config,
+            false,
+            &sysroot,
+            false,
+            &|_| (),
+        )
+        .ok()
+        .map(|(ws, error)| {
+            (
+                CargoWorkspace::new(ws, detached_file.clone()),
+                WorkspaceBuildScripts::default(),
+                error.map(Arc::new),
+            )
+        });
 
         let cargo_config_extra_env = cargo_config_env(detached_file, &config.extra_env, &sysroot);
         Ok(ProjectWorkspace {

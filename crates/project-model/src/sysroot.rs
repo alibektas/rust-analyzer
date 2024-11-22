@@ -329,6 +329,7 @@ impl Sysroot {
             &library_manifest,
             sysroot_src_dir,
             &cargo_config,
+            false,
             &Sysroot::empty(),
             // Make sure we never attempt to write to the sysroot
             true,

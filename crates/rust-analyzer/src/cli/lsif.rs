@@ -296,7 +296,7 @@ impl flags::Lsif {
         let path = AbsPathBuf::assert_utf8(env::current_dir()?.join(self.path));
         let root = ProjectManifest::discover_single(&path)?;
         eprintln!("Generating LSIF for project at {root}");
-        let mut workspace = ProjectWorkspace::load(root, cargo_config, no_progress)?;
+        let mut workspace = ProjectWorkspace::load(root, cargo_config, self.no_deps, no_progress)?;
 
         let build_scripts = workspace.run_build_scripts(cargo_config, no_progress)?;
         workspace.set_build_scripts(build_scripts);
