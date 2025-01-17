@@ -663,7 +663,7 @@ impl Printer<'_> {
                     self.print_literal_or_const(end);
                 }
             }
-            Pat::Slice { prefix, slice, suffix } => {
+            Pat::Slice { prefix, slice, suffix, .. } => {
                 w!(self, "[");
                 for pat in prefix.iter() {
                     self.print_pat(*pat);

@@ -28,7 +28,7 @@ use crate::{
     builtin_type::{BuiltinFloat, BuiltinInt, BuiltinUint},
     path::{GenericArgs, Path},
     type_ref::{Mutability, Rawness},
-    BlockId, ConstBlockId,
+    BlockId, ConstBlockId, DeclOrigin,
 };
 
 pub use syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, Ordering, RangeOp, UnaryOp};
@@ -581,6 +581,7 @@ pub enum Pat {
         prefix: Box<[PatId]>,
         slice: Option<PatId>,
         suffix: Box<[PatId]>,
+        declaration_origin: Option<DeclOrigin>,
     },
     /// This might refer to a variable if a single segment path (specifically, on destructuring assignment).
     Path(Path),
@@ -625,7 +626,7 @@ impl Pat {
                 args.iter().copied().for_each(f);
             }
             Pat::Ref { pat, .. } => f(*pat),
-            Pat::Slice { prefix, slice, suffix } => {
+            Pat::Slice { prefix, slice, suffix, .. } => {
                 let total_iter = prefix.iter().chain(slice.iter()).chain(suffix.iter());
                 total_iter.copied().for_each(f);
             }

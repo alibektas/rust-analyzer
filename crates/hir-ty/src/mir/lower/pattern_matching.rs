@@ -242,7 +242,7 @@ impl MirLowerCtx<'_> {
                 }
                 (current, current_else)
             }
-            Pat::Slice { prefix, slice, suffix } => {
+            Pat::Slice { prefix, slice, suffix, .. } => {
                 if mode == MatchingMode::Check {
                     // emit runtime length check for slice
                     if let TyKind::Slice(_) = self.infer[pattern].kind(Interner) {

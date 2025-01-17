@@ -823,7 +823,10 @@ impl ExprCollector<'_> {
                     .map_while(|elem| collect_possibly_rest(self, elem).left())
                     .collect();
                 let suffix = elements.map(|elem| self.collect_expr_as_pat(elem)).collect();
-                self.alloc_pat_from_expr(Pat::Slice { prefix, slice: None, suffix }, syntax_ptr)
+                self.alloc_pat_from_expr(
+                    Pat::Slice { prefix, slice: None, suffix, declaration_origin: None },
+                    syntax_ptr,
+                )
             }
             ast::Expr::CallExpr(e) => {
                 let path = collect_path(self, e.expr()?)?;
@@ -1673,6 +1676,7 @@ impl ExprCollector<'_> {
                     prefix: prefix.into_iter().map(|p| self.collect_pat(p, binding_list)).collect(),
                     slice: slice.map(|p| self.collect_pat(p, binding_list)),
                     suffix: suffix.into_iter().map(|p| self.collect_pat(p, binding_list)).collect(),
+                    declaration_origin: None,
                 }
             }
             ast::Pat::LiteralPat(lit) => 'b: {

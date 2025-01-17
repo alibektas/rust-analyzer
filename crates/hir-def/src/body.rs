@@ -360,7 +360,7 @@ impl Body {
                 args.iter().copied().for_each(f);
             }
             Pat::Ref { pat, .. } => f(*pat),
-            Pat::Slice { prefix, slice, suffix } => {
+            Pat::Slice { prefix, slice, suffix, .. } => {
                 let total_iter = prefix.iter().chain(slice.iter()).chain(suffix.iter());
                 total_iter.copied().for_each(f);
             }

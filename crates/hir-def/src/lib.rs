@@ -1538,3 +1538,23 @@ pub struct UnresolvedMacro {
 
 #[derive(Default, Debug, Eq, PartialEq, Clone, Copy)]
 pub struct SyntheticSyntax;
+
+/// Provides context for checking patterns in declarations. More specifically this
+/// allows us to infer array types if the pattern is irrefutable and allows us to infer
+/// the size of the array. See issue #76342.
+#[derive(Eq, PartialEq, Debug, Copy, Clone)]
+pub enum DeclOrigin {
+    // from an `if let` expression
+    LetExpr,
+    // from `let x = ..`
+    LocalDecl { els: Option<BlockId> },
+}
+
+impl DeclOrigin {
+    pub fn try_get_else(&self) -> Option<BlockId> {
+        match self {
+            Self::LocalDecl { els } => *els,
+            Self::LetExpr => None,
+        }
+    }
+}

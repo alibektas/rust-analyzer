@@ -3814,3 +3814,16 @@ async fn foo(a: (), b: i32) -> u32 {
         "#,
     );
 }
+
+#[test]
+fn irrefutable_slices() {
+    check_infer(
+        r#"
+// edition = "2021"
+fn main() {
+    let [a, b] = [1u32, 2u32].try_into().unwrap();
+}
+        "#,
+        expect![],
+    );
+}

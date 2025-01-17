@@ -6,12 +6,13 @@ use hir_def::{
     body::Body,
     hir::{Binding, BindingAnnotation, BindingId, Expr, ExprId, Literal, Pat, PatId},
     path::Path,
+    DeclOrigin, HasModule,
 };
 use hir_expand::name::Name;
 use stdx::TupleExt;
 
 use crate::{
-    consteval::{try_const_usize, usize_const},
+    consteval::{self, try_const_usize, usize_const},
     infer::{
         coerce::CoerceNever, expr::ExprIsRead, BindingMode, Expectation, InferenceContext,
         TypeMismatch,
@@ -321,9 +322,14 @@ impl InferenceContext<'_> {
             Pat::Bind { id, subpat } => {
                 return self.infer_bind_pat(pat, *id, default_bm, *subpat, &expected);
             }
-            Pat::Slice { prefix, slice, suffix } => {
-                self.infer_slice_pat(&expected, prefix, slice, suffix, default_bm)
-            }
+            Pat::Slice { prefix, slice, suffix, declaration_origin } => self.infer_slice_pat(
+                &expected,
+                prefix,
+                slice,
+                suffix,
+                default_bm,
+                declaration_origin,
+            ),
             Pat::Wild => expected.clone(),
             Pat::Range { .. } => {
                 // FIXME: do some checks here.
@@ -478,9 +484,35 @@ impl InferenceContext<'_> {
         slice: &Option<PatId>,
         suffix: &[PatId],
         default_bm: BindingMode,
+        declaration_origin: &Option<DeclOrigin>,
     ) -> Ty {
         let elem_ty = match expected.kind(Interner) {
             TyKind::Array(st, _) | TyKind::Slice(st) => st.clone(),
+            // If `expected` is an infer ty, we try to equate it to an array if the given pattern
+            // allows it. See issue #76342
+            TyKind::InferenceVar(st, kind) => {
+                dbg!(&st);
+                dbg!(&kind);
+
+                if !slice.is_none() {
+                    return self.err_ty();
+                }
+
+                let len = prefix.len() + suffix.len();
+                let size = consteval::usize_const(
+                    self.db,
+                    Some(len as u128),
+                    self.owner.krate(self.db.upcast()),
+                );
+
+                let array_ty = TyKind::Array(self.err_ty(), size).intern(Interner);
+                if self.unify(&array_ty, expected) {
+                    eprintln!("Couldn't unify");
+                    return self.err_ty();
+                }
+
+                array_ty
+            }
             _ => self.err_ty(),
         };
 
