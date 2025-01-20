@@ -505,13 +505,14 @@ impl InferenceContext<'_> {
                     self.owner.krate(self.db.upcast()),
                 );
 
-                let array_ty = TyKind::Array(self.err_ty(), size).intern(Interner);
-                if self.unify(&array_ty, expected) {
+                let elem_ty = self.table.new_type_var();
+                let array_ty = TyKind::Array(elem_ty.clone(), size).intern(Interner);
+                if !self.unify(&array_ty, expected) {
                     eprintln!("Couldn't unify");
                     return self.err_ty();
                 }
 
-                array_ty
+                self.resolve_ty_shallow(&elem_ty)
             }
             _ => self.err_ty(),
         };
