@@ -13,6 +13,7 @@ use stdx::TupleExt;
 
 use crate::{
     consteval::{self, try_const_usize, usize_const},
+    display::HirDisplay,
     infer::{
         coerce::CoerceNever, expr::ExprIsRead, BindingMode, Expectation, InferenceContext,
         TypeMismatch,
@@ -507,12 +508,16 @@ impl InferenceContext<'_> {
 
                 let elem_ty = self.table.new_type_var();
                 let array_ty = TyKind::Array(elem_ty.clone(), size).intern(Interner);
-                if !self.unify(&array_ty, expected) {
+                if !self.unify(expected, &array_ty) {
                     eprintln!("Couldn't unify");
                     return self.err_ty();
                 }
 
-                self.resolve_ty_shallow(&elem_ty)
+                dbg!(&elem_ty);
+                let elem_ty = self.resolve_ty_shallow(&elem_ty);
+                dbg!(&elem_ty);
+
+                elem_ty
             }
             _ => self.err_ty(),
         };
