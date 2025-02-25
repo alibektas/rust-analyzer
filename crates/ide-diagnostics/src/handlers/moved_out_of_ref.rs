@@ -21,6 +21,23 @@ mod tests {
     // FIXME: spans are broken
 
     #[test]
+    fn abc() {
+        check_diagnostics(
+            r#"
+struct NotCopy;
+struct S {
+    field: NotCopy,
+}
+
+fn f(s: &S) -> S {
+    S { field: s.field }
+  //^^^^^^^^^^^^^^^^^^^^ error: cannot move `NotCopy` out of reference
+}
+"#,
+        );
+    }
+
+    #[test]
     fn move_by_explicit_deref() {
         check_diagnostics(
             r#"

@@ -3,7 +3,7 @@
 // Currently it is an ad-hoc implementation, only useful for mutability analysis. Feel free to remove all of these
 // if needed for implementing a proper borrow checker.
 
-use std::iter;
+use std::{fmt::Pointer, iter};
 
 use hir_def::{DefWithBodyId, HasModule};
 use la_arena::ArenaMap;
@@ -102,6 +102,7 @@ pub fn borrowck_query(
             mir_body: body,
         });
     })?;
+
     Ok(res.into())
 }
 
@@ -119,34 +120,50 @@ fn make_fetch_closure_field(
 
 fn moved_out_of_ref(db: &dyn HirDatabase, body: &MirBody) -> Vec<MovedOutOfRef> {
     let mut result = vec![];
-    let mut for_operand = |op: &Operand, span: MirSpan| match op {
-        Operand::Copy(p) | Operand::Move(p) => {
-            let mut ty: Ty = body.locals[p.local].ty.clone();
-            let mut is_dereference_of_ref = false;
-            for proj in p.projection.lookup(&body.projection_store) {
-                if *proj == ProjectionElem::Deref && ty.as_reference().is_some() {
-                    is_dereference_of_ref = true;
+    let mut for_operand = |op: &Operand, span: MirSpan| {
+        dbg!(&op, &span);
+        match op {
+            Operand::Copy(p) | Operand::Move(p) => {
+                let mut ty: Ty = body.locals[p.local].ty.clone();
+                let mut is_dereference_of_ref = false;
+                for proj in p.projection.lookup(&body.projection_store) {
+                    if *proj == ProjectionElem::Deref && ty.as_reference().is_some() {
+                        is_dereference_of_ref = true;
+                    }
+                    ty = proj.projected_ty(
+                        ty,
+                        db,
+                        make_fetch_closure_field(db),
+                        body.owner.module(db.upcast()).krate(),
+                    );
                 }
-                ty = proj.projected_ty(
-                    ty,
-                    db,
-                    make_fetch_closure_field(db),
-                    body.owner.module(db.upcast()).krate(),
-                );
+                if dbg!(is_dereference_of_ref)
+                    && !ty.clone().is_copy(db, body.owner)
+                    && !ty.data(Interner).flags.intersects(TypeFlags::HAS_ERROR)
+                {
+                    match span {
+                        MirSpan::ExprId(idx) => {
+                            dbg!(&db.body(body.owner).pretty_print_expr(
+                                db.upcast(),
+                                body.owner,
+                                idx,
+                                span::Edition::Edition2021
+                            ));
+                            ()
+                        }
+                        _ => (),
+                    };
+
+                    result.push(MovedOutOfRef { span: dbg!(span), ty });
+                }
             }
-            if is_dereference_of_ref
-                && !ty.clone().is_copy(db, body.owner)
-                && !ty.data(Interner).flags.intersects(TypeFlags::HAS_ERROR)
-            {
-                result.push(MovedOutOfRef { span, ty });
-            }
+            Operand::Constant(_) | Operand::Static(_) => (),
         }
-        Operand::Constant(_) | Operand::Static(_) => (),
     };
     for (_, block) in body.basic_blocks.iter() {
         db.unwind_if_cancelled();
         for statement in &block.statements {
-            match &statement.kind {
+            match &dbg!(&statement.kind) {
                 StatementKind::Assign(_, r) => match r {
                     Rvalue::ShallowInitBoxWithAlloc(_) => (),
                     Rvalue::ShallowInitBox(o, _)

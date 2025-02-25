@@ -323,6 +323,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
                 return Ok(Some((self.lower_literal_to_operand(ty, l)?, current)));
             }
         }
+        dbg!("No adjustments");
         let Some((p, current)) = self.lower_expr_as_place(current, expr_id, true)? else {
             return Ok(None);
         };
@@ -391,9 +392,18 @@ impl<'ctx> MirLowerCtx<'ctx> {
         place: Place,
         prev_block: BasicBlockId,
     ) -> Result<Option<BasicBlockId>> {
+        dbg!(self.body.pretty_print_expr(
+            self.db.upcast(),
+            self.owner,
+            expr_id,
+            Edition::Edition2021
+        ));
+
         if let Some(adjustments) = self.infer.expr_adjustments.get(&expr_id) {
+            eprintln!("There are adjustments");
             return self.lower_expr_to_place_with_adjust(expr_id, place, prev_block, adjustments);
         }
+        eprintln!("No adjustments");
         self.lower_expr_to_place_without_adjust(expr_id, place, prev_block)
     }
 
@@ -403,7 +413,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
         place: Place,
         mut current: BasicBlockId,
     ) -> Result<Option<BasicBlockId>> {
-        match &self.body.exprs[expr_id] {
+        match dbg!(&self.body.exprs[expr_id]) {
             Expr::OffsetOf(_) => {
                 not_supported!("builtin#offset_of")
             }
@@ -854,7 +864,14 @@ impl<'ctx> MirLowerCtx<'ctx> {
                         for RecordLitField { name, expr } in fields.iter() {
                             let field_id =
                                 variant_data.field(name).ok_or(MirLowerError::UnresolvedField)?;
-                            let Some((op, c)) = self.lower_expr_to_some_operand(*expr, current)?
+                            dbg!(self.body.pretty_print_expr(
+                                self.db.upcast(),
+                                self.owner,
+                                *expr,
+                                Edition::Edition2021,
+                            ));
+                            let Some((op, c)) =
+                                dbg!(self.lower_expr_to_some_operand(*expr, current))?
                             else {
                                 return Ok(None);
                             };
@@ -888,7 +905,15 @@ impl<'ctx> MirLowerCtx<'ctx> {
                                 )?,
                             },
                         );
-                        self.push_assignment(current, place, rvalue, expr_id.into());
+                        eprintln!("YUH");
+                        dbg!(self.body.pretty_print_expr(
+                            self.db.upcast(),
+                            self.owner,
+                            expr_id,
+                            Edition::Edition2021,
+                        ));
+                        // TODO : This is the line that causes all the problems.
+                        self.push_assignment(current, dbg!(place), dbg!(rvalue), expr_id.into());
                         Ok(Some(current))
                     }
                     VariantId::UnionId(union_id) => {
@@ -1590,7 +1615,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
     }
 
     fn push_fake_read(&mut self, block: BasicBlockId, p: Place, span: MirSpan) {
-        self.push_statement(block, StatementKind::FakeRead(p).with_span(span));
+        dbg!(self.push_statement(block, StatementKind::FakeRead(p).with_span(span)));
     }
 
     fn push_assignment(
@@ -1600,7 +1625,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
         rvalue: Rvalue,
         span: MirSpan,
     ) {
-        self.push_statement(block, StatementKind::Assign(place, rvalue).with_span(span));
+        dbg!(self.push_statement(block, StatementKind::Assign(place, rvalue).with_span(span)));
     }
 
     fn discr_temp_place(&mut self, current: BasicBlockId) -> Place {
@@ -1715,7 +1740,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
         span: MirSpan,
     ) -> Result<()> {
         self.drop_scopes.last_mut().unwrap().locals.push(l);
-        self.push_statement(current, StatementKind::StorageLive(l).with_span(span));
+        dbg!(self.push_statement(current, StatementKind::StorageLive(l).with_span(span)));
         Ok(())
     }
 
@@ -1974,7 +1999,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
                     span,
                 );
             }
-            self.push_statement(*current, StatementKind::StorageDead(l).with_span(span));
+            dbg!(self.push_statement(*current, StatementKind::StorageDead(l).with_span(span)));
         }
     }
 }
@@ -2154,6 +2179,7 @@ pub fn lower_to_mir(
     }
     let mut ctx = MirLowerCtx::new(db, owner, body, infer);
     // 0 is return local
+    dbg!(ctx.body.pretty_print_expr(ctx.db.upcast(), ctx.owner, root_expr, Edition::Edition2021));
     ctx.result.locals.alloc(Local { ty: ctx.expr_ty_after_adjustments(root_expr) });
     let binding_picker = |b: BindingId| {
         let owner = ctx.body.binding_owners.get(&b).copied();

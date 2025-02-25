@@ -133,7 +133,7 @@ impl MirLowerCtx<'_> {
             }
             this.lower_expr_to_some_place_without_adjust(expr_id, current)
         };
-        match &self.body.exprs[expr_id] {
+        match dbg!(&self.body.exprs[expr_id]) {
             Expr::Path(p) => {
                 let resolver_guard =
                     self.resolver.update_to_inner_scope(self.db.upcast(), self.owner, expr_id);
@@ -144,7 +144,7 @@ impl MirLowerCtx<'_> {
                 let Some(pr) = resolved else {
                     return try_rvalue(self);
                 };
-                match pr {
+                match dbg!(pr) {
                     ValueNs::LocalBinding(pat_id) => {
                         Ok(Some((self.binding_local(pat_id)?.into(), current)))
                     }
