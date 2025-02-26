@@ -308,6 +308,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
             return Err(MirLowerError::UnsizedTemporary(ty));
         }
         let l = self.result.locals.alloc(Local { ty });
+        dbg!("Push storage", &l, &current, &span);
         self.push_storage_live_for_local(l, current, span)?;
         Ok(l)
     }
@@ -2209,7 +2210,9 @@ pub fn lower_to_mir(
         }
         ctx.lower_params_and_bindings([].into_iter(), None, binding_picker)?
     };
-    if let Some(current) = ctx.lower_expr_to_place(root_expr, return_slot().into(), current)? {
+    if let Some(current) =
+        dbg!(ctx.lower_expr_to_place(root_expr, return_slot().into(), current)?)
+    {
         let current = ctx.pop_drop_scope_assert_finished(current, root_expr.into())?;
         ctx.set_terminator(current, TerminatorKind::Return, root_expr.into());
     }
