@@ -39,8 +39,8 @@ use crate::{
     mir::{
         intern_const_scalar, return_slot, AggregateKind, Arena, BasicBlock, BasicBlockId, BinOp,
         BorrowKind, CastKind, ClosureId, ConstScalar, Either, Expr, FieldId, Idx, InferenceResult,
-        Interner, Local, LocalId, MemoryMap, MirBody, MirSpan, Mutability, Operand, Place,
-        PlaceElem, PointerCast, ProjectionElem, ProjectionStore, RawIdx, Rvalue, Statement,
+        Interner, Local, LocalId, MemoryMap, MirBody, MirSpan, Mutability, Operand, OperandKind,
+        Place, PlaceElem, PointerCast, ProjectionElem, ProjectionStore, RawIdx, Rvalue, Statement,
         StatementKind, Substitution, SwitchTargets, Terminator, TerminatorKind, TupleFieldId, Ty,
         UnOp, VariantId,
     },
@@ -328,7 +328,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
         let Some((p, current)) = self.lower_expr_as_place(current, expr_id, true)? else {
             return Ok(None);
         };
-        Ok(Some((Operand::Copy(p), current)))
+        Ok(Some((Operand { kind: OperandKind::Copy(p), span: None }, current)))
     }
 
     fn lower_expr_to_place_with_adjust(
@@ -351,7 +351,12 @@ impl<'ctx> MirLowerCtx<'ctx> {
                     else {
                         return Ok(None);
                     };
-                    self.push_assignment(current, place, Operand::Copy(p).into(), expr_id.into());
+                    self.push_assignment(
+                        current,
+                        place,
+                        Operand { kind: OperandKind::Copy(p), span: None }.into(),
+                        expr_id.into(),
+                    );
                     Ok(Some(current))
                 }
                 Adjust::Borrow(AutoBorrow::Ref(_, m) | AutoBorrow::RawPtr(m)) => {
@@ -375,7 +380,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
                         place,
                         Rvalue::Cast(
                             CastKind::PointerCoercion(*cast),
-                            Operand::Copy(p),
+                            Operand { kind: OperandKind::Copy(p), span: None },
                             last.target.clone(),
                         ),
                         expr_id.into(),
@@ -490,7 +495,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
                         self.push_assignment(
                             current,
                             place,
-                            Operand::Copy(temp).into(),
+                            Operand { kind: OperandKind::Copy(temp), span: None }.into(),
                             expr_id.into(),
                         );
                         Ok(Some(current))
@@ -531,20 +536,23 @@ impl<'ctx> MirLowerCtx<'ctx> {
                         self.push_assignment(
                             current,
                             place,
-                            Operand::Constant(
-                                ConstData {
-                                    ty,
-                                    value: chalk_ir::ConstValue::BoundVar(BoundVar::new(
-                                        DebruijnIndex::INNERMOST,
-                                        gen.type_or_const_param_idx(p.into()).ok_or(
-                                            MirLowerError::TypeError(
-                                                "fail to lower const generic param",
-                                            ),
-                                        )?,
-                                    )),
-                                }
-                                .intern(Interner),
-                            )
+                            Operand {
+                                kind: OperandKind::Constant(
+                                    ConstData {
+                                        ty,
+                                        value: chalk_ir::ConstValue::BoundVar(BoundVar::new(
+                                            DebruijnIndex::INNERMOST,
+                                            gen.type_or_const_param_idx(p.into()).ok_or(
+                                                MirLowerError::TypeError(
+                                                    "fail to lower const generic param",
+                                                ),
+                                            )?,
+                                        )),
+                                    }
+                                    .intern(Interner),
+                                ),
+                                span: None,
+                            }
                             .into(),
                             expr_id.into(),
                         );
@@ -877,7 +885,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
                                 return Ok(None);
                             };
                             current = c;
-                            operands[u32::from(field_id.into_raw()) as usize] = Some((op, expr_id));
+                            operands[u32::from(field_id.into_raw()) as usize] = Some(op);
                         }
                         let rvalue = Rvalue::Aggregate(
                             AggregateKind::Adt(variant_id, subst),
@@ -886,7 +894,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
                                     .into_iter()
                                     .enumerate()
                                     .map(|(i, it)| match it {
-                                        Some((it, expr_id)) => it,
+                                        Some(it) => it,
                                         None => {
                                             let p = sp.project(
                                                 ProjectionElem::Field(Either::Left(FieldId {
@@ -897,7 +905,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
                                                 })),
                                                 &mut self.result.projection_store,
                                             );
-                                            Operand::Copy(p)
+                                            Operand { kind: OperandKind::Copy(p), span: None }
                                         }
                                     })
                                     .collect(),
@@ -1007,7 +1015,12 @@ impl<'ctx> MirLowerCtx<'ctx> {
                 else {
                     return Ok(None);
                 };
-                self.push_assignment(current, place, Operand::Copy(p).into(), expr_id.into());
+                self.push_assignment(
+                    current,
+                    place,
+                    Operand { kind: OperandKind::Copy(p), span: None }.into(),
+                    expr_id.into(),
+                );
                 Ok(Some(current))
             }
             Expr::UnaryOp {
@@ -1084,8 +1097,11 @@ impl<'ctx> MirLowerCtx<'ctx> {
                     else {
                         return Ok(None);
                     };
-                    let r_value =
-                        Rvalue::CheckedBinaryOp(op.into(), Operand::Copy(lhs_place), rhs_op);
+                    let r_value = Rvalue::CheckedBinaryOp(
+                        op.into(),
+                        Operand { kind: OperandKind::Copy(lhs_place), span: None },
+                        rhs_op,
+                    );
                     self.push_assignment(current, lhs_place, r_value, expr_id.into());
                     return Ok(Some(current));
                 }
@@ -1261,9 +1277,11 @@ impl<'ctx> MirLowerCtx<'ctx> {
                                 Rvalue::Ref(*bk, p),
                                 capture_spans[0],
                             );
-                            operands.push(Operand::Move(tmp));
+                            operands.push(Operand { kind: OperandKind::Move(tmp), span: None });
                         }
-                        CaptureKind::ByValue => operands.push(Operand::Move(p)),
+                        CaptureKind::ByValue => {
+                            operands.push(Operand { kind: OperandKind::Move(p), span: None })
+                        }
                     }
                 }
                 self.push_assignment(
@@ -1498,7 +1516,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
                 .const_eval(const_id, subst, None)
                 .map_err(|e| MirLowerError::ConstEvalError(name.into(), Box::new(e)))?
         };
-        Ok(Operand::Constant(c))
+        Ok(Operand { kind: OperandKind::Constant(c), span: None })
     }
 
     fn write_bytes_to_place(

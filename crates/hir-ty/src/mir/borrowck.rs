@@ -3,7 +3,7 @@
 // Currently it is an ad-hoc implementation, only useful for mutability analysis. Feel free to remove all of these
 // if needed for implementing a proper borrow checker.
 
-use std::{fmt::Pointer, iter};
+use std::iter;
 
 use hir_def::{DefWithBodyId, HasModule};
 use la_arena::ArenaMap;
@@ -13,7 +13,7 @@ use triomphe::Arc;
 
 use crate::{
     db::{HirDatabase, InternedClosure},
-    mir::Operand,
+    mir::{Operand, OperandKind},
     utils::ClosureSubst,
     ClosureId, Interner, Substitution, Ty, TyExt, TypeFlags,
 };
@@ -122,8 +122,8 @@ fn moved_out_of_ref(db: &dyn HirDatabase, body: &MirBody) -> Vec<MovedOutOfRef> 
     let mut result = vec![];
     let mut for_operand = |op: &Operand, span: MirSpan| {
         dbg!(&op, &span);
-        match op {
-            Operand::Copy(p) | Operand::Move(p) => {
+        match op.kind {
+            OperandKind::Copy(p) | OperandKind::Move(p) => {
                 let mut ty: Ty = body.locals[p.local].ty.clone();
                 let mut is_dereference_of_ref = false;
                 for proj in p.projection.lookup(&body.projection_store) {
@@ -157,7 +157,7 @@ fn moved_out_of_ref(db: &dyn HirDatabase, body: &MirBody) -> Vec<MovedOutOfRef> 
                     result.push(MovedOutOfRef { span: dbg!(span), ty });
                 }
             }
-            Operand::Constant(_) | Operand::Static(_) => (),
+            OperandKind::Constant(_) | OperandKind::Static(_) => (),
         }
     };
     for (_, block) in body.basic_blocks.iter() {
@@ -231,8 +231,8 @@ fn moved_out_of_ref(db: &dyn HirDatabase, body: &MirBody) -> Vec<MovedOutOfRef> 
 
 fn partially_moved(db: &dyn HirDatabase, body: &MirBody) -> Vec<PartiallyMoved> {
     let mut result = vec![];
-    let mut for_operand = |op: &Operand, span: MirSpan| match op {
-        Operand::Copy(p) | Operand::Move(p) => {
+    let mut for_operand = |op: &Operand, span: MirSpan| match op.kind {
+        OperandKind::Copy(p) | OperandKind::Move(p) => {
             let mut ty: Ty = body.locals[p.local].ty.clone();
             for proj in p.projection.lookup(&body.projection_store) {
                 ty = proj.projected_ty(
@@ -248,7 +248,7 @@ fn partially_moved(db: &dyn HirDatabase, body: &MirBody) -> Vec<PartiallyMoved> 
                 result.push(PartiallyMoved { span, ty, local: p.local });
             }
         }
-        Operand::Constant(_) | Operand::Static(_) => (),
+        OperandKind::Constant(_) | OperandKind::Static(_) => (),
     };
     for (_, block) in body.basic_blocks.iter() {
         db.unwind_if_cancelled();
@@ -517,7 +517,7 @@ fn record_usage(local: LocalId, result: &mut ArenaMap<LocalId, MutabilityReason>
 }
 
 fn record_usage_for_operand(arg: &Operand, result: &mut ArenaMap<LocalId, MutabilityReason>) {
-    if let Operand::Copy(p) | Operand::Move(p) = arg {
+    if let OperandKind::Copy(p) | OperandKind::Move(p) = arg.kind {
         record_usage(p.local, result);
     }
 }
