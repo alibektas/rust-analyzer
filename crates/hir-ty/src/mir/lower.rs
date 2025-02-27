@@ -328,7 +328,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
         let Some((p, current)) = self.lower_expr_as_place(current, expr_id, true)? else {
             return Ok(None);
         };
-        Ok(Some((Operand { kind: OperandKind::Copy(p), span: None }, current)))
+        Ok(Some((Operand { kind: OperandKind::Copy(p), span: Some(expr_id.into()) }, current)))
     }
 
     fn lower_expr_to_place_with_adjust(

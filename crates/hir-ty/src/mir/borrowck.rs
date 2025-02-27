@@ -154,7 +154,7 @@ fn moved_out_of_ref(db: &dyn HirDatabase, body: &MirBody) -> Vec<MovedOutOfRef> 
                         _ => (),
                     };
 
-                    result.push(MovedOutOfRef { span: dbg!(span), ty });
+                    result.push(MovedOutOfRef { span: op.span.unwrap_or(span), ty });
                 }
             }
             OperandKind::Constant(_) | OperandKind::Static(_) => (),
