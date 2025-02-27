@@ -877,7 +877,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
                                 return Ok(None);
                             };
                             current = c;
-                            operands[u32::from(field_id.into_raw()) as usize] = Some(op);
+                            operands[u32::from(field_id.into_raw()) as usize] = Some((op, expr_id));
                         }
                         let rvalue = Rvalue::Aggregate(
                             AggregateKind::Adt(variant_id, subst),
@@ -886,7 +886,7 @@ impl<'ctx> MirLowerCtx<'ctx> {
                                     .into_iter()
                                     .enumerate()
                                     .map(|(i, it)| match it {
-                                        Some(it) => it,
+                                        Some((it, expr_id)) => it,
                                         None => {
                                             let p = sp.project(
                                                 ProjectionElem::Field(Either::Left(FieldId {
